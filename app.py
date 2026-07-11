@@ -280,7 +280,11 @@ if not open_positions.empty:
     )
 
 
-paper_balance = STARTING_BALANCE + realized_pnl
+paper_balance = (
+    STARTING_BALANCE
+    + realized_pnl
+    + unrealized_pnl
+)
 total_pnl = realized_pnl + unrealized_pnl
 
 
