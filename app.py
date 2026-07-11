@@ -9,7 +9,7 @@ from core.market_clock import market_status, now_in_india
 from data.scanner import MarketScanner
 from watchlist import WATCHLIST
 
-
+CLAUDE_REVIEWS_FILE = Path("logs/claude_reviews.json")
 TRADE_LOG = Path("logs/paper_trades.csv")
 OPEN_POSITIONS_FILE = Path("logs/open_positions.json")
 
@@ -68,7 +68,42 @@ def load_open_positions() -> pd.DataFrame:
 
     return pd.DataFrame(data.values())
 
+def load_claude_reviews() -> pd.DataFrame:
+    if (
+        not CLAUDE_REVIEWS_FILE.exists()
+        or CLAUDE_REVIEWS_FILE.stat().st_size == 0
+    ):
+        return pd.DataFrame()
 
+    try:
+        raw_text = CLAUDE_REVIEWS_FILE.read_text(
+            encoding="utf-8"
+        ).strip()
+
+        if not raw_text:
+            return pd.DataFrame()
+
+        data = json.loads(raw_text)
+    except Exception as error:
+        st.error(f"Could not read Claude reviews: {error}")
+        return pd.DataFrame()
+
+    if not data:
+        return pd.DataFrame()
+
+    rows = []
+
+    for symbol, review in data.items():
+        rows.append(
+            {
+                "Symbol": symbol,
+                "Approved": review.get("approved", False),
+                "Confidence": review.get("confidence", 0),
+                "Reason": review.get("reason", ""),
+            }
+        )
+
+    return pd.DataFrame(rows)
 india_time = now_in_india()
 status = market_status(india_time)
 
@@ -89,6 +124,7 @@ st.divider()
 
 trades = load_trades()
 open_positions = load_open_positions()
+claude_reviews = load_claude_reviews()
 
 
 required_trade_columns = [
