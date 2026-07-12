@@ -7,3 +7,4 @@ __pycache__/
 logs/paper_trades.csv
 logs/open_positions.json
 logs/claude_reviews.json
+logs/trade_journal.json
