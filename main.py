@@ -5,6 +5,7 @@ from analytics.adaptive_filter import AdaptiveTradeFilter
 from pathlib import Path
 from datetime import time as clock_time
 from typing import Any, Dict, List, Tuple
+from analytics.market_regime import MarketRegime
 
 import pandas as pd
 
@@ -249,6 +250,7 @@ def open_paper_trades(
     claude: ClaudeAnalyzer,
     performance_coach: PerformanceCoach,
     adaptive_filter: AdaptiveTradeFilter,
+    market_regime: MarketRegime,
 ) -> None:
     if not can_open_new_trade():
         print("New entries are currently disabled.")
@@ -313,7 +315,7 @@ def open_paper_trades(
             )
             continue
 
-            print(
+        print(
             f"Claude approved {symbol} | "
             f"Confidence: {confidence}% | "
             f"Reason: {reason}"
@@ -332,16 +334,46 @@ def open_paper_trades(
             performance_coach.analyze()
         )
 
+        regime_data = market_regime.analyze(
+            latest={
+                "open": result.get(
+                    "price",
+                    0,
+                ),
+                "close": result.get(
+                    "price",
+                    0,
+                ),
+                "ema_20": result.get(
+                    "ema_20",
+                    0,
+                ),
+                "ema_50": result.get(
+                    "ema_50",
+                    0,
+                ),
+                "atr": result.get(
+                    "atr",
+                    0,
+                ),
+            },
+            previous_close=None,
+        )
+
         adaptive_decision = adaptive_filter.evaluate(
             strategy=strategy,
             confidence=confidence,
             market_condition=market_condition,
             performance_report=performance_report,
+            regime_data=regime_data,
         )
 
         result["strategy"] = strategy
         result["market_condition"] = (
             market_condition
+        )
+        result["market_regime"] = (
+            regime_data
         )
         result["adaptive_take_trade"] = (
             adaptive_decision["take_trade"]
@@ -452,7 +484,15 @@ def open_paper_trades(
                 f"Target: ₹{target_price:.2f} | "
                 f"Estimated Risk: "
                 f"₹{adjusted_risk:.2f}"
+                
             )
+        print(
+            f"Market regime for {symbol} | "
+            f"Trend: {regime_data['trend']} | "
+            f"Volatility: "
+            f"{regime_data['volatility']} | "
+            f"Gap: {regime_data['gap']}"
+        )
 
 
 def monitor_positions(
@@ -577,6 +617,7 @@ def build_watchlist_display(
 
 def main() -> None:
     market = MarketData()
+    market_regime = MarketRegime()
     claude = ClaudeAnalyzer()
 
     performance_coach = PerformanceCoach()

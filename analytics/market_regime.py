@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 
 class MarketRegime:
@@ -16,11 +16,11 @@ class MarketRegime:
     - Sector strength
     - India VIX
     """
-
+    
     def analyze(
         self,
         latest: Dict,
-        previous_close: float,
+        previous_close: Optional[float] = None,
     ) -> Dict:
 
         ema20 = float(latest["ema_20"])
@@ -66,20 +66,27 @@ class MarketRegime:
         # Gap
         # -------------------
 
-        gap_percent = (
-            (open_price - previous_close)
-            / previous_close
-        ) * 100
-
-        if gap_percent > 1:
-            gap = "GAP_UP"
-
-        elif gap_percent < -1:
-            gap = "GAP_DOWN"
+        if (
+            previous_close is None
+            or previous_close <= 0
+        ):
+            gap_percent = 0.0
+            gap = "UNKNOWN"
 
         else:
-            gap = "NO_GAP"
+            gap_percent = (
+                (open_price - previous_close)
+                / previous_close
+            ) * 100
 
+            if gap_percent > 1:
+                gap = "GAP_UP"
+
+            elif gap_percent < -1:
+                gap = "GAP_DOWN"
+
+            else:
+                gap = "NO_GAP"
         return {
             "trend": trend,
             "volatility": volatility,
