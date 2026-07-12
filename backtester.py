@@ -9,11 +9,15 @@ from core.trading_costs import calculate_intraday_costs
 
 def backtest_orb(
     candles_response: Dict[str, Any],
-    risk_reward_ratio: float = 2.0,
     starting_capital: float = 100000.0,
     risk_per_trade_percent: float = 0.5,
+    risk_reward_ratio: float = 2.0,
     slippage_bps: float = 5.0,
     transaction_cost_rate: float = 0.001,
+    rsi_min: float = 50,
+    rsi_max: float = 70,
+    entry_cutoff: str = "15:30",
+    volume_multiplier: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
     """
     Backtest one ORB trade for one trading day.
@@ -37,10 +41,11 @@ def backtest_orb(
         .sort_values("timestamp")
         .reset_index(drop=True)
     )
-    dataframe["volume_average_20"] = (
-    dataframe["volume"]
-    .rolling(window=20)
-    .mean()
+
+    dataframe["volume_avg20"] = (
+        dataframe["volume"]
+        .rolling(window=20)
+        .mean()
     )
 
     opening_range = dataframe[
@@ -54,16 +59,20 @@ def backtest_orb(
         )
     ]
 
+    cutoff_time = pd.Timestamp(
+        entry_cutoff
+    ).time()
+
     trading_period = dataframe[
-    (
-        dataframe["timestamp"].dt.time
-        >= pd.Timestamp("09:30").time()
-    )
-    & (
-        dataframe["timestamp"].dt.time
-        <= pd.Timestamp("12:00").time()
-    )
-]
+        (
+            dataframe["timestamp"].dt.time
+            >= pd.Timestamp("09:30").time()
+        )
+        & (
+            dataframe["timestamp"].dt.time
+            <= cutoff_time
+        )
+    ]
 
     if opening_range.empty or trading_period.empty:
         print("Not enough data for ORB backtest.")
@@ -94,11 +103,8 @@ def backtest_orb(
             candle.get("ema_50"),
             candle.get("vwap"),
             candle.get("rsi"),
-            candle.get("atr"),
             candle.get("volume"),
-            candle.get("volume_average_20"),
-            candle.get("macd"),
-            candle.get("macd_signal"),
+            candle.get("volume_avg20"),
         ]
 
         if any(
@@ -107,47 +113,17 @@ def backtest_orb(
         ):
             continue
 
-        current_price = float(
-            candle["close"]
-        )
-
-        atr_percent = (
-            float(candle["atr"])
-            / current_price
-            * 100
-            if current_price > 0
-            else 0.0
-        )
-
-        strong_volume = (
-            float(candle["volume"])
-            >= float(
-                candle["volume_average_20"]
-            )
-            * 1.25
-        )
-
-        sufficient_volatility = (
-            atr_percent >= 0.30
-        )
-
-        strong_trend = (
-            float(candle["ema_20"])
-            > float(candle["ema_50"])
-            and float(candle["macd"])
-            > float(candle["macd_signal"])
-        )
-
         long_breakout = (
-            current_price > opening_high
-            and strong_trend
-            and current_price
-            > float(candle["vwap"])
-            and 55
-            <= float(candle["rsi"])
-            <= 68
-            and strong_volume
-            and sufficient_volatility
+            candle["close"] > opening_high
+            and candle["ema_20"]
+            > candle["ema_50"]
+            and candle["close"] > candle["vwap"]
+            and rsi_min
+            <= candle["rsi"]
+            <= rsi_max
+            and candle["volume"]
+            >= candle["volume_avg20"]
+            * volume_multiplier
         )
 
         if not long_breakout:
