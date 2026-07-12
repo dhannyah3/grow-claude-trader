@@ -1,5 +1,7 @@
 import time
 import json
+from analytics.performance_coach import PerformanceCoach
+from analytics.adaptive_filter import AdaptiveTradeFilter
 from pathlib import Path
 from datetime import time as clock_time
 from typing import Any, Dict, List, Tuple
@@ -245,6 +247,8 @@ def open_paper_trades(
     trader: PaperTrader,
     risk_manager: RiskManager,
     claude: ClaudeAnalyzer,
+    performance_coach: PerformanceCoach,
+    adaptive_filter: AdaptiveTradeFilter,
 ) -> None:
     if not can_open_new_trade():
         print("New entries are currently disabled.")
@@ -309,10 +313,68 @@ def open_paper_trades(
             )
             continue
 
-        print(
+            print(
             f"Claude approved {symbol} | "
             f"Confidence: {confidence}% | "
             f"Reason: {reason}"
+        )
+
+        strategy = "ORB_BREAKOUT"
+
+        market_condition = (
+            "TRENDING"
+            if result.get("ema_20", 0)
+            > result.get("ema_50", 0)
+            else "RANGE_BOUND"
+        )
+
+        performance_report = (
+            performance_coach.analyze()
+        )
+
+        adaptive_decision = adaptive_filter.evaluate(
+            strategy=strategy,
+            confidence=confidence,
+            market_condition=market_condition,
+            performance_report=performance_report,
+        )
+
+        result["strategy"] = strategy
+        result["market_condition"] = (
+            market_condition
+        )
+        result["adaptive_take_trade"] = (
+            adaptive_decision["take_trade"]
+        )
+        result["position_multiplier"] = (
+            adaptive_decision[
+                "position_multiplier"
+            ]
+        )
+        result["adaptive_reasons"] = (
+            adaptive_decision["reasons"]
+        )
+
+        print(
+            f"Adaptive filter for {symbol}:"
+        )
+
+        for adaptive_reason in adaptive_decision[
+            "reasons"
+        ]:
+            print(f"- {adaptive_reason}")
+
+        if not adaptive_decision["take_trade"]:
+            print(
+                f"{symbol}: trade rejected by "
+                f"adaptive filter."
+            )
+            continue
+
+        position_multiplier = float(
+            adaptive_decision[
+                "position_multiplier"
+            ]
         )
 
         quote = market.get_live_quote(symbol)
@@ -349,14 +411,19 @@ def open_paper_trades(
             target_price=target_price,
         )
 
-        quantity = int(
+        base_quantity = int(
             plan["quantity"]
+        )
+
+        quantity = int(
+            base_quantity
+            * position_multiplier
         )
 
         if quantity <= 0:
             print(
-                f"{symbol}: calculated "
-                f"quantity is zero."
+                f"{symbol}: adaptive quantity "
+                f"is zero."
             )
             continue
 
@@ -369,13 +436,22 @@ def open_paper_trades(
         )
 
         if opened:
-            print(
+            adjusted_risk = (
+                float(plan["risk_amount"])
+                * position_multiplier
+            )
+
+        print(
                 f"{symbol} paper trade opened | "
                 f"Qty: {quantity} | "
+                f"Base Qty: {base_quantity} | "
+                f"Multiplier: "
+                f"{position_multiplier:.2f} | "
                 f"Entry: ₹{entry_price:.2f} | "
                 f"Stop: ₹{stop_loss:.2f} | "
                 f"Target: ₹{target_price:.2f} | "
-                f"Risk: ₹{plan['risk_amount']:.2f}"
+                f"Estimated Risk: "
+                f"₹{adjusted_risk:.2f}"
             )
 
 
@@ -503,6 +579,15 @@ def main() -> None:
     market = MarketData()
     claude = ClaudeAnalyzer()
 
+    performance_coach = PerformanceCoach()
+
+    adaptive_filter = AdaptiveTradeFilter(
+        minimum_confidence=80,
+        minimum_win_rate=50.0,
+        minimum_sample_size=5,
+        weak_market_multiplier=0.5,
+    )
+
     trader = PaperTrader(
         starting_balance=100000.0,
         log_file="logs/paper_trades.csv",
@@ -579,6 +664,10 @@ def main() -> None:
                 trader=trader,
                 risk_manager=risk_manager,
                 claude=claude,
+                performance_coach=(
+                    performance_coach
+                ),
+                adaptive_filter=adaptive_filter,
             )
 
             last_scan_time = current_timestamp
