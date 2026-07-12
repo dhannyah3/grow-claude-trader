@@ -44,9 +44,13 @@ Return only valid JSON using this structure:
 }}
 
 Rules:
+- This is a pre-trade technical review only.
+- Entry price, stop loss, target, quantity, and position size are calculated later by the risk manager and are not required here.
+- Evaluate only the supplied indicators and opening-range information.
 - approved must be true or false.
 - confidence must be an integer from 0 to 100.
-- Reject the setup when information is missing or conflicting.
+- Reject only when the supplied technical indicators are missing, invalid, or materially conflicting.
+- Do not invent any missing market data.
 - Do not give financial advice.
 """
 
