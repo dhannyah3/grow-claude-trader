@@ -453,7 +453,7 @@ if __name__ == "__main__":
 
     results = run_multi_day_backtest(
         symbol="RELIANCE",
-        start_date=date(2026, 7, 1),
+        start_date=date(2026, 4, 1),
         end_date=date(2026, 7, 10),
         starting_capital=INITIAL_CAPITAL,
     )
