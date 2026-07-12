@@ -4,7 +4,8 @@ import os
 
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
 class PaperTrader:
@@ -12,72 +13,261 @@ class PaperTrader:
         self,
         starting_balance: float = 100000.0,
         log_file: str = "logs/paper_trades.csv",
-    ):
-        self.starting_balance = starting_balance
-        self.cash_balance = starting_balance
-        self.log_file = log_file
+        positions_file: str = "logs/open_positions.json",
+    ) -> None:
+        self.starting_balance = float(starting_balance)
+        self.cash_balance = float(starting_balance)
+
+        self.log_file = Path(log_file)
+        self.positions_file = Path(positions_file)
 
         self.open_positions: Dict[str, Dict[str, Any]] = {}
+        self.closed_trades: List[Dict[str, Any]] = []
+
+        self._prepare_files()
+        self._load_closed_trades()
+        self._load_open_positions()
+        self._recalculate_cash_balance()
+
+    # ----------------------------------------------------
+    # PREPARE FILES
+    # ----------------------------------------------------
+
+    def _prepare_files(self) -> None:
+        self.log_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        self.positions_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        if not self.log_file.exists():
+            with self.log_file.open(
+                "w",
+                newline="",
+                encoding="utf-8",
+            ) as file:
+                writer = csv.writer(file)
+
+                writer.writerow(
+                    [
+                        "entry_time",
+                        "exit_time",
+                        "symbol",
+                        "quantity",
+                        "entry_price",
+                        "exit_price",
+                        "stop_loss",
+                        "target",
+                        "pnl",
+                        "exit_reason",
+                    ]
+                )
+
+        if not self.positions_file.exists():
+            self.positions_file.write_text(
+                "{}",
+                encoding="utf-8",
+            )
+
+    # ----------------------------------------------------
+    # LOAD CLOSED TRADES
+    # ----------------------------------------------------
+
+    def _load_closed_trades(self) -> None:
         self.closed_trades = []
 
-        self._prepare_log_file()
-        self._save_open_positions()
+        try:
+            with self.log_file.open(
+                "r",
+                newline="",
+                encoding="utf-8",
+            ) as file:
+                reader = csv.DictReader(file)
+
+                for row in reader:
+                    if not row.get("symbol"):
+                        continue
+
+                    try:
+                        trade = {
+                            "entry_time": datetime.fromisoformat(
+                                row["entry_time"]
+                            ),
+                            "exit_time": datetime.fromisoformat(
+                                row["exit_time"]
+                            ),
+                            "symbol": row["symbol"],
+                            "quantity": int(
+                                float(row["quantity"])
+                            ),
+                            "entry_price": float(
+                                row["entry_price"]
+                            ),
+                            "exit_price": float(
+                                row["exit_price"]
+                            ),
+                            "stop_loss": float(
+                                row["stop_loss"]
+                            ),
+                            "target": float(
+                                row["target"]
+                            ),
+                            "pnl": float(row["pnl"]),
+                            "exit_reason": row["exit_reason"],
+                        }
+
+                        self.closed_trades.append(trade)
+
+                    except (
+                        KeyError,
+                        TypeError,
+                        ValueError,
+                    ) as error:
+                        print(
+                            "Skipping invalid trade-log row: "
+                            f"{error}"
+                        )
+
+        except OSError as error:
+            print(
+                f"Could not load closed trades: {error}"
+            )
 
     # ----------------------------------------------------
-    # CREATE LOG FILE
+    # LOAD OPEN POSITIONS
     # ----------------------------------------------------
 
-    def _prepare_log_file(self) -> None:
-        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+    def _load_open_positions(self) -> None:
+        self.open_positions = {}
 
-        if os.path.exists(self.log_file):
+        if (
+            not self.positions_file.exists()
+            or self.positions_file.stat().st_size == 0
+        ):
             return
 
-        with open(
-            self.log_file,
-            "w",
-            newline="",
-            encoding="utf-8",
-        ) as file:
-            writer = csv.writer(file)
+        try:
+            raw_text = self.positions_file.read_text(
+                encoding="utf-8"
+            ).strip()
 
-            writer.writerow(
-                [
-                    "entry_time",
-                    "exit_time",
-                    "symbol",
-                    "quantity",
-                    "entry_price",
-                    "exit_price",
-                    "stop_loss",
-                    "target",
-                    "pnl",
-                    "exit_reason",
-                ]
+            if not raw_text:
+                return
+
+            saved_positions = json.loads(raw_text)
+
+            if not isinstance(saved_positions, dict):
+                print(
+                    "Open positions file has an invalid format."
+                )
+                return
+
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ) as error:
+            print(
+                f"Could not load open positions: {error}"
             )
+            return
+
+        for symbol, position in saved_positions.items():
+            try:
+                entry_time_text = position.get(
+                    "entry_time"
+                )
+
+                entry_time = (
+                    datetime.fromisoformat(entry_time_text)
+                    if entry_time_text
+                    else datetime.now()
+                )
+
+                self.open_positions[symbol] = {
+                    "symbol": str(
+                        position.get("symbol", symbol)
+                    ),
+                    "quantity": int(
+                        position["quantity"]
+                    ),
+                    "entry_price": float(
+                        position["entry_price"]
+                    ),
+                    "stop_loss": float(
+                        position["stop_loss"]
+                    ),
+                    "target": float(
+                        position["target"]
+                    ),
+                    "entry_time": entry_time,
+                }
+
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+            ) as error:
+                print(
+                    f"Skipping invalid position "
+                    f"{symbol}: {error}"
+                )
 
     # ----------------------------------------------------
     # SAVE OPEN POSITIONS
     # ----------------------------------------------------
 
     def _save_open_positions(self) -> None:
-
-        data = {}
+        data: Dict[str, Dict[str, Any]] = {}
 
         for symbol, position in self.open_positions.items():
-
             data[symbol] = {
                 "symbol": position["symbol"],
                 "quantity": position["quantity"],
                 "entry_price": position["entry_price"],
                 "stop_loss": position["stop_loss"],
                 "target": position["target"],
-                "entry_time": position["entry_time"].isoformat(),
+                "entry_time": position[
+                    "entry_time"
+                ].isoformat(),
             }
 
-        Path("logs/open_positions.json").write_text(
-            json.dumps(data, indent=4),
+        temporary_file = self.positions_file.with_suffix(
+            ".tmp"
+        )
+
+        temporary_file.write_text(
+            json.dumps(
+                data,
+                indent=4,
+            ),
             encoding="utf-8",
+        )
+
+        temporary_file.replace(
+            self.positions_file
+        )
+
+    # ----------------------------------------------------
+    # RESTORE CASH BALANCE
+    # ----------------------------------------------------
+
+    def _recalculate_cash_balance(self) -> None:
+        realized_pnl = self.total_realized_pnl()
+
+        invested_amount = sum(
+            position["quantity"]
+            * position["entry_price"]
+            for position in self.open_positions.values()
+        )
+
+        self.cash_balance = (
+            self.starting_balance
+            + realized_pnl
+            - invested_amount
         )
 
     # ----------------------------------------------------
@@ -92,20 +282,43 @@ class PaperTrader:
         stop_loss: float,
         target: float,
     ) -> bool:
-
         if symbol in self.open_positions:
-            print(f"{symbol}: position already open.")
+            print(
+                f"{symbol}: position already open."
+            )
             return False
 
         if quantity <= 0:
-            print("Quantity must be greater than zero.")
+            print(
+                "Quantity must be greater than zero."
+            )
+            return False
+
+        if entry_price <= 0:
+            print(
+                "Entry price must be greater than zero."
+            )
+            return False
+
+        if stop_loss >= entry_price:
+            print(
+                "Stop loss must be below entry price "
+                "for a long trade."
+            )
+            return False
+
+        if target <= entry_price:
+            print(
+                "Target must be above entry price "
+                "for a long trade."
+            )
             return False
 
         trade_value = quantity * entry_price
 
         if trade_value > self.cash_balance:
             print(
-                f"Insufficient virtual balance. "
+                "Insufficient virtual balance. "
                 f"Required: ₹{trade_value:.2f}, "
                 f"Available: ₹{self.cash_balance:.2f}"
             )
@@ -113,7 +326,7 @@ class PaperTrader:
 
         position = {
             "symbol": symbol,
-            "quantity": quantity,
+            "quantity": int(quantity),
             "entry_price": float(entry_price),
             "stop_loss": float(stop_loss),
             "target": float(target),
@@ -121,7 +334,6 @@ class PaperTrader:
         }
 
         self.open_positions[symbol] = position
-
         self.cash_balance -= trade_value
 
         self._save_open_positions()
@@ -144,19 +356,29 @@ class PaperTrader:
         exit_price: float,
         exit_reason: str,
     ) -> Optional[Dict[str, Any]]:
-
         position = self.open_positions.get(symbol)
 
         if position is None:
-            print(f"{symbol}: no open paper position.")
+            print(
+                f"{symbol}: no open paper position."
+            )
             return None
 
-        quantity = position["quantity"]
-        entry_price = position["entry_price"]
+        if exit_price <= 0:
+            print(
+                "Exit price must be greater than zero."
+            )
+            return None
+
+        quantity = int(position["quantity"])
+        entry_price = float(
+            position["entry_price"]
+        )
 
         exit_value = quantity * exit_price
-
-        pnl = (exit_price - entry_price) * quantity
+        pnl = (
+            exit_price - entry_price
+        ) * quantity
 
         self.cash_balance += exit_value
 
@@ -167,18 +389,18 @@ class PaperTrader:
             "quantity": quantity,
             "entry_price": entry_price,
             "exit_price": float(exit_price),
-            "stop_loss": position["stop_loss"],
-            "target": position["target"],
+            "stop_loss": float(
+                position["stop_loss"]
+            ),
+            "target": float(position["target"]),
             "pnl": float(pnl),
-            "exit_reason": exit_reason,
+            "exit_reason": str(exit_reason),
         }
 
         self.closed_trades.append(trade)
-
         del self.open_positions[symbol]
 
         self._save_open_positions()
-
         self._write_trade_to_log(trade)
 
         print(
@@ -199,14 +421,12 @@ class PaperTrader:
         symbol: str,
         current_price: float,
     ) -> Optional[Dict[str, Any]]:
-
         position = self.open_positions.get(symbol)
 
         if position is None:
             return None
 
         if current_price <= position["stop_loss"]:
-
             return self.close_trade(
                 symbol=symbol,
                 exit_price=current_price,
@@ -214,7 +434,6 @@ class PaperTrader:
             )
 
         if current_price >= position["target"]:
-
             return self.close_trade(
                 symbol=symbol,
                 exit_price=current_price,
@@ -224,21 +443,18 @@ class PaperTrader:
         return None
 
     # ----------------------------------------------------
-    # WRITE CSV
+    # WRITE CLOSED TRADE TO CSV
     # ----------------------------------------------------
 
     def _write_trade_to_log(
         self,
         trade: Dict[str, Any],
     ) -> None:
-
-        with open(
-            self.log_file,
+        with self.log_file.open(
             "a",
             newline="",
             encoding="utf-8",
         ) as file:
-
             writer = csv.writer(file)
 
             writer.writerow(
@@ -257,28 +473,51 @@ class PaperTrader:
             )
 
     # ----------------------------------------------------
+    # GETTERS AND SUMMARY
+    # ----------------------------------------------------
 
     def get_open_position(
         self,
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
+        position = self.open_positions.get(symbol)
 
-        return self.open_positions.get(symbol)
+        if position is None:
+            return None
+
+        return position.copy()
+
+    def get_open_positions(
+        self,
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            symbol: position.copy()
+            for symbol, position
+            in self.open_positions.items()
+        }
 
     def total_realized_pnl(self) -> float:
-
         return sum(
-            trade["pnl"]
+            float(trade["pnl"])
             for trade in self.closed_trades
         )
 
     def account_summary(self) -> Dict[str, Any]:
-
         return {
-            "starting_balance": self.starting_balance,
-            "cash_balance": round(self.cash_balance, 2),
-            "open_positions": len(self.open_positions),
-            "closed_trades": len(self.closed_trades),
+            "starting_balance": round(
+                self.starting_balance,
+                2,
+            ),
+            "cash_balance": round(
+                self.cash_balance,
+                2,
+            ),
+            "open_positions": len(
+                self.open_positions
+            ),
+            "closed_trades": len(
+                self.closed_trades
+            ),
             "realized_pnl": round(
                 self.total_realized_pnl(),
                 2,
@@ -287,20 +526,10 @@ class PaperTrader:
 
 
 if __name__ == "__main__":
-
     trader = PaperTrader()
 
-    trader.open_trade(
-        symbol="RELIANCE",
-        quantity=10,
-        entry_price=1300,
-        stop_loss=1290,
-        target=1320,
-    )
-
-    trader.check_exit(
-        "RELIANCE",
-        1321,
-    )
-
+    print("\nAccount summary:")
     print(trader.account_summary())
+
+    print("\nOpen positions:")
+    print(trader.get_open_positions())
