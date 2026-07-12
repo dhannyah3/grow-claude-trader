@@ -14,7 +14,7 @@ TRADE_LOG = Path("logs/paper_trades.csv")
 OPEN_POSITIONS_FILE = Path("logs/open_positions.json")
 
 STARTING_BALANCE = 100000.0
-AUTO_REFRESH_MS = 60000
+AUTO_REFRESH_MS =  180000
 
 
 st.set_page_config(
