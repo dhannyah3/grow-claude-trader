@@ -24,9 +24,61 @@ class AdaptiveTradeFilter:
         confidence: int,
         market_condition: str,
         performance_report: Dict[str, Any],
+        regime_data: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         reasons = []
         position_multiplier = 1.0
+        regime_data = regime_data or {}
+
+        trend = str(
+            regime_data.get("trend", "UNKNOWN")
+        )
+
+        volatility = str(
+            regime_data.get(
+                "volatility",
+                "UNKNOWN",
+            )
+        )
+
+        gap = str(
+            regime_data.get("gap", "NO_GAP")
+        )
+
+        if (
+            strategy == "ORB_BREAKOUT"
+            and trend in {"DOWNTREND", "RANGE"}
+        ):
+            return {
+                "take_trade": False,
+                "position_multiplier": 0.0,
+                "reasons": [
+                    (
+                        f"{strategy} is disabled during "
+                        f"{trend} conditions."
+                    )
+                ],
+            }
+
+        if volatility == "HIGH":
+            position_multiplier *= 0.5
+
+            reasons.append(
+                (
+                    "High volatility detected. "
+                    "Position size reduced by 50%."
+                )
+            )
+
+        if gap in {"GAP_UP", "GAP_DOWN"}:
+            position_multiplier *= 0.75
+
+            reasons.append(
+                (
+                    f"{gap} detected. Position size "
+                    f"reduced by an additional 25%."
+                )
+            )
 
         if confidence < self.minimum_confidence:
             return {
