@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 from growwapi import GrowwAPI
 
 from config import config
-from indicators import calculate_indicators
+from strategies.indicators import calculate_indicators
 
 
 class MarketData:
