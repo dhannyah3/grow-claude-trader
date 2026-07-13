@@ -1,29 +1,32 @@
 from dotenv import load_dotenv
+
 load_dotenv()
-from intelligence.market_brain import MarketBrain
-from strategies.factory import StrategyFactory
-import time
+
 import json
-from analytics.performance_coach import PerformanceCoach
-from analytics.adaptive_filter import AdaptiveTradeFilter
-from pathlib import Path
+import time
 from datetime import time as clock_time
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
-from analytics.market_regime import MarketRegime
 
 import pandas as pd
 
-from strategies.claude_analyzer import ClaudeAnalyzer
-from utils.dashboard import Dashboard
-from strategies.indicators import calculate_indicators
+from analytics.adaptive_filter import AdaptiveTradeFilter
+from analytics.market_regime import MarketRegime
+from analytics.performance_coach import PerformanceCoach
 from core.market_clock import (
     can_open_new_trade,
     market_status,
     now_in_india,
 )
-from data.market_data import MarketData
 from core.paper_trader import PaperTrader
 from core.risk_manager import RiskManager
+from data.market_data import MarketData
+from intelligence.market_brain import MarketBrain
+from intelligence.market_intelligence import MarketIntelligence
+from strategies.claude_analyzer import ClaudeAnalyzer
+from strategies.factory import StrategyFactory
+from strategies.indicators import calculate_indicators
+from utils.dashboard import Dashboard
 from watchlist import WATCHLIST
 
 
@@ -39,24 +42,30 @@ MINIMUM_CANDLES = 50
 
 CLAUDE_REVIEWS_FILE = Path("logs/claude_reviews.json")
 
+
 def save_claude_review(
     symbol: str,
-    review: dict,
+    review: Dict[str, Any],
 ) -> None:
+    CLAUDE_REVIEWS_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    reviews: Dict[str, Any] = {}
 
     if CLAUDE_REVIEWS_FILE.exists():
-
         try:
             reviews = json.loads(
                 CLAUDE_REVIEWS_FILE.read_text(
-                    encoding="utf-8"
+                    encoding="utf-8",
                 )
             )
-        except Exception:
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ):
             reviews = {}
-
-    else:
-        reviews = {}
 
     reviews[symbol] = review
 
@@ -73,25 +82,37 @@ def get_today_time_range() -> Tuple[str, str]:
     current_time = now_in_india()
     day_text = current_time.strftime("%Y-%m-%d")
 
-    start_time = f"{day_text} 09:15:00"
-    end_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
-
-    return start_time, end_time
+    return (
+        f"{day_text} 09:15:00",
+        current_time.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+    )
 
 
 def check_signal(
     dataframe: pd.DataFrame,
 ) -> Tuple[str, int, pd.Series, float]:
+    """
+    Legacy ORB scoring helper.
+
+    The live scanner now uses StrategyFactory instead,
+    but this remains available for compatibility.
+    """
+
     latest = dataframe.iloc[-1]
 
     opening_candles = dataframe[
-        dataframe["timestamp"].dt.time < clock_time(9, 30)
+        dataframe["timestamp"].dt.time
+        < clock_time(9, 30)
     ]
 
     if opening_candles.empty:
         return "WAIT", 0, latest, 0.0
 
-    opening_high = float(opening_candles["high"].max())
+    opening_high = float(
+        opening_candles["high"].max()
+    )
 
     recent_volume_average = (
         dataframe["volume"]
@@ -135,29 +156,16 @@ def check_signal(
 def scan_market(
     market: MarketData,
     market_regime: MarketRegime,
+    market_intelligence: MarketIntelligence,
     market_brain: MarketBrain,
 ) -> List[Dict[str, Any]]:
     """
-    Scan the watchlist using the strategy selected
-    by MarketBrain for each symbol.
-
-    Flow:
-
-    Groww candles
-    -> indicators
-    -> market regime
-    -> MarketBrain
-    -> StrategyFactory
-    -> strategy signal
+    Scan the watchlist and let MarketBrain choose
+    the strategy used for each symbol.
     """
 
-    start_time, end_time = (
-        get_today_time_range()
-    )
-
-    scan_results: List[
-        Dict[str, Any]
-    ] = []
+    start_time, end_time = get_today_time_range()
+    scan_results: List[Dict[str, Any]] = []
 
     for symbol in WATCHLIST:
         print(f"Scanning {symbol}...")
@@ -176,14 +184,8 @@ def scan_market(
             not candles
             or not candles.get("candles")
         ):
-            print(
-                f"{symbol}: no candle data."
-            )
-
-            time.sleep(
-                REQUEST_DELAY_SECONDS
-            )
-
+            print(f"{symbol}: no candle data.")
+            time.sleep(REQUEST_DELAY_SECONDS)
             continue
 
         dataframe = calculate_indicators(
@@ -202,7 +204,7 @@ def scan_market(
                     "score": 0,
                     "price": None,
                     "strategy": None,
-                    "reason": (
+                    "strategy_reason": (
                         "Not enough candles."
                     ),
                     "claude_approved": False,
@@ -211,10 +213,7 @@ def scan_market(
                 }
             )
 
-            time.sleep(
-                REQUEST_DELAY_SECONDS
-            )
-
+            time.sleep(REQUEST_DELAY_SECONDS)
             continue
 
         indicator_dataframe = (
@@ -233,8 +232,7 @@ def scan_market(
 
         if indicator_dataframe.empty:
             print(
-                f"{symbol}: indicators "
-                "are not ready."
+                f"{symbol}: indicators are not ready."
             )
 
             scan_results.append(
@@ -244,7 +242,7 @@ def scan_market(
                     "score": 0,
                     "price": None,
                     "strategy": None,
-                    "reason": (
+                    "strategy_reason": (
                         "Indicators unavailable."
                     ),
                     "claude_approved": False,
@@ -253,60 +251,56 @@ def scan_market(
                 }
             )
 
-            time.sleep(
-                REQUEST_DELAY_SECONDS
-            )
-
+            time.sleep(REQUEST_DELAY_SECONDS)
             continue
 
-        latest = (
-            indicator_dataframe.iloc[-1]
-        )
+        latest = indicator_dataframe.iloc[-1]
+        first_candle = dataframe.iloc[0]
 
-        first_candle = (
-            dataframe.iloc[0]
-        )
-
-        regime_input = (
-            latest.to_dict()
-        )
-
-        # MarketRegime must use the true
-        # first candle's open, not the latest
-        # candle's open.
-
+        regime_input = latest.to_dict()
         regime_input["open"] = float(
             first_candle["open"]
         )
 
         try:
-            regime_data = (
-                market_regime.analyze(
-                    latest=regime_input,
-                    previous_close=None,
+            regime_data = market_regime.analyze(
+                latest=regime_input,
+                previous_close=None,
+            )
+
+            intelligence = (
+                market_intelligence.analyze(
+                    dataframe=indicator_dataframe,
+                    regime=regime_data,
                 )
             )
+
+            try:
+                brain_decision = (
+                    market_brain.decide(
+                        regime_data=regime_data,
+                        intelligence=intelligence,
+                    )
+                )
+            except TypeError:
+                # Backward compatibility with MarketBrain v1.
+                brain_decision = (
+                    market_brain.decide(
+                        regime_data=regime_data,
+                    )
+                )
+
         except (
             KeyError,
             TypeError,
             ValueError,
         ) as error:
             print(
-                f"{symbol}: regime analysis "
+                f"{symbol}: market analysis "
                 f"failed: {error}"
             )
-
-            time.sleep(
-                REQUEST_DELAY_SECONDS
-            )
-
+            time.sleep(REQUEST_DELAY_SECONDS)
             continue
-
-        brain_decision = (
-            market_brain.decide(
-                regime_data=regime_data,
-            )
-        )
 
         selected_strategy = str(
             brain_decision.get(
@@ -316,30 +310,16 @@ def scan_market(
         )
 
         try:
-            strategy = (
-                StrategyFactory.get(
-                    selected_strategy
-                )
+            strategy = StrategyFactory.get(
+                selected_strategy
             )
         except ValueError as error:
-            print(
-                f"{symbol}: {error}"
-            )
-
-            time.sleep(
-                REQUEST_DELAY_SECONDS
-            )
-
+            print(f"{symbol}: {error}")
+            time.sleep(REQUEST_DELAY_SECONDS)
             continue
 
-        # Pass the full dataframe so ORB
-        # can still access the 09:15–09:30
-        # opening candles.
-
-        strategy_signal = (
-            strategy.analyze(
-                dataframe
-            )
+        strategy_signal = strategy.analyze(
+            dataframe
         )
 
         action = str(
@@ -347,7 +327,7 @@ def scan_market(
                 "action",
                 "WAIT",
             )
-        )
+        ).upper()
 
         score = int(
             strategy_signal.get(
@@ -356,28 +336,40 @@ def scan_market(
             )
         )
 
+        signal_reason = str(
+            strategy_signal.get(
+                "reason",
+                "",
+            )
+        )
+
         if not brain_decision.get(
             "should_trade",
             False,
         ):
             action = "WAIT"
-
             signal_reason = (
                 "MarketBrain rejected trading. "
-                + str(
-                    strategy_signal.get(
-                        "reason",
-                        "",
-                    )
-                )
+                + signal_reason
             )
-        else:
-            signal_reason = str(
-                strategy_signal.get(
-                    "reason",
-                    "",
-                )
+
+        strategy_metadata = (
+            strategy_signal.get(
+                "metadata",
+                {},
             )
+        )
+
+        opening_high = (
+            strategy_metadata.get(
+                "opening_high"
+            )
+            if isinstance(
+                strategy_metadata,
+                dict,
+            )
+            else None
+        )
 
         result = {
             "symbol": symbol,
@@ -407,23 +399,17 @@ def scan_market(
             "macd_signal": float(
                 latest["macd_signal"]
             ),
+            "opening_high": opening_high,
             "day_open": float(
                 first_candle["open"]
             ),
-            "strategy": (
-                selected_strategy
-            ),
+            "strategy": selected_strategy,
             "strategy_class": (
                 type(strategy).__name__
             ),
-            "strategy_reason": (
-                signal_reason
-            ),
+            "strategy_reason": signal_reason,
             "strategy_metadata": (
-                strategy_signal.get(
-                    "metadata",
-                    {},
-                )
+                strategy_metadata
             ),
             "suggested_entry": (
                 strategy_signal.get(
@@ -440,12 +426,31 @@ def scan_market(
                     "target"
                 )
             ),
-            "market_regime": (
-                regime_data
+            "market_regime": regime_data,
+            "market_intelligence": intelligence,
+            "market_quality": (
+                intelligence.get(
+                    "market_quality",
+                    0,
+                )
             ),
-            "market_brain": (
-                brain_decision
+            "rsi_state": intelligence.get(
+                "rsi_state",
+                "UNKNOWN",
             ),
+            "macd_state": intelligence.get(
+                "macd_state",
+                "UNKNOWN",
+            ),
+            "vwap_state": intelligence.get(
+                "vwap_state",
+                "UNKNOWN",
+            ),
+            "volume_state": intelligence.get(
+                "volume_state",
+                "UNKNOWN",
+            ),
+            "market_brain": brain_decision,
             "brain_confidence": (
                 brain_decision.get(
                     "confidence",
@@ -468,6 +473,8 @@ def scan_market(
         print(
             f"{symbol} | "
             f"Price: ₹{result['price']:.2f} | "
+            f"Quality: "
+            f"{result['market_quality']}/100 | "
             f"Regime: "
             f"{regime_data['trend']} | "
             f"Strategy: "
@@ -477,11 +484,10 @@ def scan_market(
             f"Reason: {signal_reason}"
         )
 
-        time.sleep(
-            REQUEST_DELAY_SECONDS
-        )
+        time.sleep(REQUEST_DELAY_SECONDS)
 
     return scan_results
+
 
 def get_claude_review(
     claude: ClaudeAnalyzer,
@@ -490,16 +496,39 @@ def get_claude_review(
     symbol = result["symbol"]
 
     setup = {
+        "strategy": result.get("strategy"),
         "price": result.get("price"),
         "score": result.get("score"),
+        "market_quality": result.get(
+            "market_quality"
+        ),
         "rsi": result.get("rsi"),
+        "rsi_state": result.get(
+            "rsi_state"
+        ),
         "atr": result.get("atr"),
         "ema_20": result.get("ema_20"),
         "ema_50": result.get("ema_50"),
         "vwap": result.get("vwap"),
+        "vwap_state": result.get(
+            "vwap_state"
+        ),
         "macd": result.get("macd"),
-        "macd_signal": result.get("macd_signal"),
-        "opening_high": result.get("opening_high"),
+        "macd_signal": result.get(
+            "macd_signal"
+        ),
+        "macd_state": result.get(
+            "macd_state"
+        ),
+        "volume_state": result.get(
+            "volume_state"
+        ),
+        "opening_high": result.get(
+            "opening_high"
+        ),
+        "strategy_reason": result.get(
+            "strategy_reason"
+        ),
     }
 
     try:
@@ -528,21 +557,16 @@ def open_paper_trades(
     claude: ClaudeAnalyzer,
     performance_coach: PerformanceCoach,
     adaptive_filter: AdaptiveTradeFilter,
-    market_regime: MarketRegime,
-    market_brain: MarketBrain,
 ) -> None:
     """
-    Review scanner signals and open approved paper trades.
+    Open paper trades from already analyzed scanner results.
 
-    Decision flow:
-
-    Scanner
-    -> Claude review
-    -> Market regime
-    -> Market Brain
-    -> Adaptive filter
-    -> Risk manager
-    -> PaperTrader
+    The scanner has already produced:
+    - market regime;
+    - market intelligence;
+    - MarketBrain decision;
+    - selected strategy;
+    - strategy entry, stop, and target.
     """
 
     if not can_open_new_trade():
@@ -554,11 +578,16 @@ def open_paper_trades(
             continue
 
         symbol = str(
-            result.get("symbol", "")
+            result.get(
+                "symbol",
+                "",
+            )
         ).strip()
 
         if not symbol:
-            print("Skipping result without a symbol.")
+            print(
+                "Skipping result without a symbol."
+            )
             continue
 
         if (
@@ -580,13 +609,10 @@ def open_paper_trades(
             ),
         ):
             print(
-                "Risk manager rejected new trades."
+                "Risk manager rejected "
+                "new trades."
             )
             break
-
-        # ---------------------------------
-        # Claude review
-        # ---------------------------------
 
         review = get_claude_review(
             claude=claude,
@@ -599,19 +625,30 @@ def open_paper_trades(
         )
 
         approved = bool(
-            review.get("approved", False)
+            review.get(
+                "approved",
+                False,
+            )
         )
 
         confidence = int(
-            review.get("confidence", 0)
+            review.get(
+                "confidence",
+                0,
+            )
         )
 
         claude_reason = str(
-            review.get("reason", "")
+            review.get(
+                "reason",
+                "",
+            )
         )
 
         result["claude_approved"] = approved
-        result["claude_confidence"] = confidence
+        result["claude_confidence"] = (
+            confidence
+        )
         result["claude_reason"] = (
             claude_reason
         )
@@ -634,128 +671,37 @@ def open_paper_trades(
             f"Reason: {claude_reason}"
         )
 
-        # ---------------------------------
-        # Validate indicator values
-        # ---------------------------------
-
-        price = float(
-            result.get("price", 0) or 0
-        )
-
-        ema_20 = float(
-            result.get("ema_20", 0) or 0
-        )
-
-        ema_50 = float(
-            result.get("ema_50", 0) or 0
-        )
-
-        atr = float(
-            result.get("atr", 0) or 0
-        )
-
-        if price <= 0:
-            print(
-                f"{symbol}: invalid scanner price."
-            )
-            continue
-
-        if (
-            ema_20 <= 0
-            or ema_50 <= 0
-        ):
-            print(
-                f"{symbol}: invalid EMA values."
-            )
-            continue
-
-        if atr <= 0:
-            print(
-                f"{symbol}: invalid ATR."
-            )
-            continue
-
-        # ---------------------------------
-        # Market regime
-        # ---------------------------------
-
-        regime_data = market_regime.analyze(
-            latest={
-                "open": price,
-                "close": price,
-                "ema_20": ema_20,
-                "ema_50": ema_50,
-                "atr": atr,
-            },
-            previous_close=None,
-        )
-
-        # Note:
-        # previous_close is currently unavailable
-        # here, so gap will be UNKNOWN.
-        # We will connect the true day open and
-        # previous close later.
-
-        # ---------------------------------
-        # Market Brain
-        # ---------------------------------
-
-        brain_decision = market_brain.decide(
-            regime_data=regime_data,
-        )
-
         selected_strategy = str(
-            brain_decision[
-                "recommended_strategy"
-            ]
-        )
-
-        try:
-            strategy_instance = (
-                StrategyFactory.get(
-                    selected_strategy
-                )
+            result.get(
+                "strategy",
+                "UNKNOWN",
             )
-        except ValueError as error:
-            print(
-                f"{symbol}: {error}"
-            )
-            continue
-
-        print(
-            f"Market Brain for {symbol}:"
         )
 
-        print(
-            f"- Strategy: "
-            f"{selected_strategy}"
+        regime_data = result.get(
+            "market_regime",
+            {},
         )
 
-        print(
-            f"- Confidence: "
-            f"{brain_decision['confidence']}%"
+        brain_decision = result.get(
+            "market_brain",
+            {},
         )
 
-        print(
-            f"- Risk multiplier: "
-            f"{brain_decision['risk_multiplier']}"
+        intelligence = result.get(
+            "market_intelligence",
+            {},
         )
 
-        for brain_reason in (
-            brain_decision["reasons"]
+        if not brain_decision.get(
+            "should_trade",
+            False,
         ):
-            print(f"- {brain_reason}")
-
-        if not brain_decision["should_trade"]:
             print(
-                f"{symbol}: Market Brain "
+                f"{symbol}: MarketBrain "
                 "rejected the trade."
             )
             continue
-
-        # ---------------------------------
-        # Adaptive performance filter
-        # ---------------------------------
 
         performance_report = (
             performance_coach.analyze()
@@ -791,31 +737,48 @@ def open_paper_trades(
         ):
             print(f"- {adaptive_reason}")
 
-        if not adaptive_decision["take_trade"]:
+        if not adaptive_decision[
+            "take_trade"
+        ]:
             print(
                 f"{symbol}: trade rejected by "
                 "adaptive filter."
             )
             continue
 
-        # Combine MarketBrain risk reduction
-        # with AdaptiveTradeFilter sizing.
-
         brain_multiplier = float(
-            brain_decision[
-                "risk_multiplier"
-            ]
+            brain_decision.get(
+                "risk_multiplier",
+                1.0,
+            )
         )
 
         adaptive_multiplier = float(
-            adaptive_decision[
-                "position_multiplier"
-            ]
+            adaptive_decision.get(
+                "position_multiplier",
+                1.0,
+            )
+        )
+
+        quality = float(
+            intelligence.get(
+                "market_quality",
+                0,
+            )
+        )
+
+        quality_multiplier = max(
+            0.5,
+            min(
+                quality / 100,
+                1.0,
+            ),
         )
 
         final_position_multiplier = (
             brain_multiplier
             * adaptive_multiplier
+            * quality_multiplier
         )
 
         final_position_multiplier = max(
@@ -826,42 +789,23 @@ def open_paper_trades(
             ),
         )
 
-        result["strategy"] = (
-            selected_strategy
-        )
-
-        result["strategy_class"] = (
-            type(strategy_instance).__name__
-        )
-
-        result["market_condition"] = (
-            market_condition
-        )
-
-        result["market_regime"] = (
-            regime_data
-        )
-
-        result["market_brain"] = (
-            brain_decision
-        )
-
         result["adaptive_take_trade"] = (
-            adaptive_decision["take_trade"]
+            adaptive_decision[
+                "take_trade"
+            ]
         )
-
         result["adaptive_reasons"] = (
             adaptive_decision["reasons"]
         )
-
         result["brain_multiplier"] = (
             brain_multiplier
         )
-
         result["adaptive_multiplier"] = (
             adaptive_multiplier
         )
-
+        result["quality_multiplier"] = (
+            quality_multiplier
+        )
         result["position_multiplier"] = (
             round(
                 final_position_multiplier,
@@ -875,10 +819,6 @@ def open_paper_trades(
                 "multiplier is zero."
             )
             continue
-
-        # ---------------------------------
-        # Live quote
-        # ---------------------------------
 
         quote = market.get_live_quote(
             symbol
@@ -899,33 +839,49 @@ def open_paper_trades(
             quote["last_price"]
         )
 
-        if entry_price <= 0:
+        atr = float(
+            result.get(
+                "atr",
+                0,
+            )
+            or 0
+        )
+
+        if entry_price <= 0 or atr <= 0:
             print(
-                f"{symbol}: invalid live price."
+                f"{symbol}: invalid price "
+                "or ATR."
             )
             continue
 
-        # Current stop and target model:
-        # 1 ATR stop, 2 ATR target.
+        suggested_stop_loss = result.get(
+            "suggested_stop_loss"
+        )
+        suggested_target = result.get(
+            "suggested_target"
+        )
 
         stop_loss = (
-            entry_price - atr
+            float(suggested_stop_loss)
+            if suggested_stop_loss
+            else entry_price - atr
         )
 
         target_price = (
-            entry_price + (2 * atr)
+            float(suggested_target)
+            if suggested_target
+            else entry_price + (2 * atr)
         )
 
-        if stop_loss <= 0:
+        if not (
+            0 < stop_loss < entry_price
+            < target_price
+        ):
             print(
-                f"{symbol}: calculated stop "
-                "loss is invalid."
+                f"{symbol}: invalid strategy "
+                "stop or target."
             )
             continue
-
-        # ---------------------------------
-        # Position sizing
-        # ---------------------------------
 
         plan = risk_manager.trade_plan(
             entry_price=entry_price,
@@ -934,7 +890,10 @@ def open_paper_trades(
         )
 
         base_quantity = int(
-            plan.get("quantity", 0)
+            plan.get(
+                "quantity",
+                0,
+            )
         )
 
         quantity = int(
@@ -982,14 +941,16 @@ def open_paper_trades(
             f"Brain: {brain_multiplier:.2f} | "
             f"Adaptive: "
             f"{adaptive_multiplier:.2f} | "
-            f"Final multiplier: "
+            f"Quality: "
+            f"{quality_multiplier:.2f} | "
+            f"Final: "
             f"{final_position_multiplier:.2f} | "
             f"Entry: ₹{entry_price:.2f} | "
             f"Stop: ₹{stop_loss:.2f} | "
             f"Target: ₹{target_price:.2f} | "
             f"Estimated Risk: "
             f"₹{adjusted_risk:.2f}"
-        )        
+        )
 
 
 def monitor_positions(
@@ -1001,15 +962,18 @@ def monitor_positions(
     )
 
     for symbol in symbols:
-        quote = market.get_live_quote(symbol)
+        quote = market.get_live_quote(
+            symbol
+        )
 
         if (
             not quote
-            or quote.get("last_price") is None
+            or quote.get("last_price")
+            is None
         ):
             print(
                 f"{symbol}: monitoring quote "
-                f"unavailable."
+                "unavailable."
             )
             continue
 
@@ -1050,15 +1014,18 @@ def close_all_positions(
     )
 
     for symbol in symbols:
-        quote = market.get_live_quote(symbol)
+        quote = market.get_live_quote(
+            symbol
+        )
 
         if (
             not quote
-            or quote.get("last_price") is None
+            or quote.get("last_price")
+            is None
         ):
             print(
                 f"{symbol}: closing quote "
-                f"unavailable."
+                "unavailable."
             )
             continue
 
@@ -1080,33 +1047,94 @@ def build_watchlist_display(
         price = result.get("price")
 
         price_text = (
-            f"₹{price:.2f}"
+            f"₹{float(price):.2f}"
             if price is not None
             else "No price"
         )
 
-        confidence = result.get(
-            "claude_confidence",
-            0,
+        action = str(
+            result.get(
+                "action",
+                "WAIT",
+            )
+        ).upper()
+
+        score = int(
+            result.get(
+                "score",
+                0,
+            )
         )
 
-        approval_text = (
-            "APPROVED"
-            if result.get(
-                "claude_approved",
-                False,
+        strategy = str(
+            result.get(
+                "strategy",
+                "UNSELECTED",
             )
-            else "NOT REVIEWED/REJECTED"
+            or "UNSELECTED"
         )
+
+        quality = int(
+            result.get(
+                "market_quality",
+                0,
+            )
+            or 0
+        )
+
+        reason = str(
+            result.get(
+                "strategy_reason",
+                result.get(
+                    "reason",
+                    "",
+                ),
+            )
+        )
+
+        claude_confidence = int(
+            result.get(
+                "claude_confidence",
+                0,
+            )
+        )
+
+        if action != "BUY":
+            claude_status = "NOT NEEDED"
+
+        elif result.get(
+            "claude_approved",
+            False,
+        ):
+            claude_status = (
+                f"APPROVED "
+                f"{claude_confidence}%"
+            )
+
+        elif claude_confidence > 0:
+            claude_status = (
+                f"REJECTED "
+                f"{claude_confidence}%"
+            )
+
+        else:
+            claude_status = "PENDING"
+
+        if len(reason) > 42:
+            reason = (
+                reason[:39]
+                + "..."
+            )
 
         rows.append(
             f"{result['symbol']:12} "
             f"{price_text:12} | "
-            f"Score "
-            f"{result.get('score', 0):3}/100 | "
-            f"{result.get('action', 'WAIT'):4} | "
-            f"Claude: {approval_text} "
-            f"{confidence}%"
+            f"{strategy:14} | "
+            f"Q {quality:3}/100 | "
+            f"S {score:3}/100 | "
+            f"{action:4} | "
+            f"Claude: {claude_status} | "
+            f"{reason}"
         )
 
     return rows
@@ -1115,16 +1143,23 @@ def build_watchlist_display(
 def main() -> None:
     market = MarketData()
     market_regime = MarketRegime()
+    market_intelligence = (
+        MarketIntelligence()
+    )
     market_brain = MarketBrain()
     claude = ClaudeAnalyzer()
 
-    performance_coach = PerformanceCoach()
+    performance_coach = (
+        PerformanceCoach()
+    )
 
-    adaptive_filter = AdaptiveTradeFilter(
-        minimum_confidence=80,
-        minimum_win_rate=50.0,
-        minimum_sample_size=5,
-        weak_market_multiplier=0.5,
+    adaptive_filter = (
+        AdaptiveTradeFilter(
+            minimum_confidence=80,
+            minimum_win_rate=50.0,
+            minimum_sample_size=5,
+            weak_market_multiplier=0.5,
+        )
     )
 
     trader = PaperTrader(
@@ -1133,14 +1168,19 @@ def main() -> None:
     )
 
     risk_manager = RiskManager(
-        account_balance=trader.starting_balance,
+        account_balance=(
+            trader.starting_balance
+        ),
         risk_per_trade_percent=0.5,
         max_daily_loss_percent=2.0,
         max_position_percent=20.0,
         max_open_positions=2,
     )
 
-    latest_scan: List[Dict[str, Any]] = []
+    latest_scan: List[
+        Dict[str, Any]
+    ] = []
+
     last_scan_time = 0.0
 
     print(
@@ -1150,12 +1190,14 @@ def main() -> None:
 
     while True:
         current_time = now_in_india()
-        status = market_status(current_time)
+        status = market_status(
+            current_time
+        )
 
-        if status in (
+        if status in {
             "CLOSED_WEEKEND",
             "CLOSED",
-        ):
+        }:
             print(
                 f"Market status: {status}"
             )
@@ -1186,7 +1228,9 @@ def main() -> None:
         current_timestamp = time.time()
 
         should_scan = (
-            can_open_new_trade(current_time)
+            can_open_new_trade(
+                current_time
+            )
             and (
                 current_timestamp
                 - last_scan_time
@@ -1196,33 +1240,73 @@ def main() -> None:
 
         if should_scan:
             latest_scan = scan_market(
-            market=market,
-            market_regime=market_regime,
-            market_brain=market_brain,
+                market=market,
+                market_regime=(
+                    market_regime
+                ),
+                market_intelligence=(
+                    market_intelligence
+                ),
+                market_brain=(
+                    market_brain
+                ),
             )
 
             open_paper_trades(
-    scan_results=latest_scan,
-    market=market,
-    trader=trader,
-    risk_manager=risk_manager,
-    claude=claude,
-    performance_coach=(
-        performance_coach
-    ),
-    adaptive_filter=adaptive_filter,
-    market_regime=market_regime,
-    market_brain=market_brain,
-)
+                scan_results=latest_scan,
+                market=market,
+                trader=trader,
+                risk_manager=risk_manager,
+                claude=claude,
+                performance_coach=(
+                    performance_coach
+                ),
+                adaptive_filter=(
+                    adaptive_filter
+                ),
+            )
 
-            last_scan_time = current_timestamp
+            last_scan_time = (
+                current_timestamp
+            )
+
+        elif (
+            status == "NO_NEW_ENTRIES"
+            and not latest_scan
+        ):
+            latest_scan = [
+                {
+                    "symbol": "MARKET",
+                    "price": None,
+                    "strategy": (
+                        "ENTRY_WINDOW_CLOSED"
+                    ),
+                    "score": 0,
+                    "market_quality": 0,
+                    "action": "WAIT",
+                    "strategy_reason": (
+                        "New entries are disabled "
+                        "for the rest of the "
+                        "session."
+                    ),
+                    "claude_approved": False,
+                    "claude_confidence": 0,
+                    "claude_reason": "",
+                }
+            ]
 
         Dashboard.show(
             balance=trader.cash_balance,
-            pnl=trader.total_realized_pnl(),
-            positions=trader.open_positions,
-            watchlist=build_watchlist_display(
-                latest_scan
+            pnl=(
+                trader.total_realized_pnl()
+            ),
+            positions=(
+                trader.open_positions
+            ),
+            watchlist=(
+                build_watchlist_display(
+                    latest_scan
+                )
             ),
         )
 
