@@ -134,9 +134,30 @@ def check_signal(
 
 def scan_market(
     market: MarketData,
+    market_regime: MarketRegime,
+    market_brain: MarketBrain,
 ) -> List[Dict[str, Any]]:
-    start_time, end_time = get_today_time_range()
-    scan_results: List[Dict[str, Any]] = []
+    """
+    Scan the watchlist using the strategy selected
+    by MarketBrain for each symbol.
+
+    Flow:
+
+    Groww candles
+    -> indicators
+    -> market regime
+    -> MarketBrain
+    -> StrategyFactory
+    -> strategy signal
+    """
+
+    start_time, end_time = (
+        get_today_time_range()
+    )
+
+    scan_results: List[
+        Dict[str, Any]
+    ] = []
 
     for symbol in WATCHLIST:
         print(f"Scanning {symbol}...")
@@ -145,18 +166,34 @@ def scan_market(
             groww_symbol=f"NSE-{symbol}",
             start_time=start_time,
             end_time=end_time,
-            interval=market.groww.CANDLE_INTERVAL_MIN_1,
+            interval=(
+                market.groww
+                .CANDLE_INTERVAL_MIN_1
+            ),
         )
 
-        if not candles or not candles.get("candles"):
-            print(f"{symbol}: no candle data.")
-            time.sleep(REQUEST_DELAY_SECONDS)
+        if (
+            not candles
+            or not candles.get("candles")
+        ):
+            print(
+                f"{symbol}: no candle data."
+            )
+
+            time.sleep(
+                REQUEST_DELAY_SECONDS
+            )
+
             continue
 
-        dataframe = calculate_indicators(candles)
+        dataframe = calculate_indicators(
+            candles
+        )
 
         if len(dataframe) < MINIMUM_CANDLES:
-            print(f"{symbol}: not enough candles.")
+            print(
+                f"{symbol}: not enough candles."
+            )
 
             scan_results.append(
                 {
@@ -164,32 +201,263 @@ def scan_market(
                     "action": "WAIT",
                     "score": 0,
                     "price": None,
-                    "reason": "Not enough candles",
+                    "strategy": None,
+                    "reason": (
+                        "Not enough candles."
+                    ),
+                    "claude_approved": False,
+                    "claude_confidence": 0,
+                    "claude_reason": "",
                 }
             )
 
-            time.sleep(REQUEST_DELAY_SECONDS)
+            time.sleep(
+                REQUEST_DELAY_SECONDS
+            )
+
             continue
 
-        action, score, latest, opening_high = (
-            check_signal(dataframe)
+        indicator_dataframe = (
+            dataframe.dropna(
+                subset=[
+                    "ema_20",
+                    "ema_50",
+                    "rsi",
+                    "vwap",
+                    "atr",
+                    "macd",
+                    "macd_signal",
+                ]
+            )
         )
+
+        if indicator_dataframe.empty:
+            print(
+                f"{symbol}: indicators "
+                "are not ready."
+            )
+
+            scan_results.append(
+                {
+                    "symbol": symbol,
+                    "action": "WAIT",
+                    "score": 0,
+                    "price": None,
+                    "strategy": None,
+                    "reason": (
+                        "Indicators unavailable."
+                    ),
+                    "claude_approved": False,
+                    "claude_confidence": 0,
+                    "claude_reason": "",
+                }
+            )
+
+            time.sleep(
+                REQUEST_DELAY_SECONDS
+            )
+
+            continue
+
+        latest = (
+            indicator_dataframe.iloc[-1]
+        )
+
+        first_candle = (
+            dataframe.iloc[0]
+        )
+
+        regime_input = (
+            latest.to_dict()
+        )
+
+        # MarketRegime must use the true
+        # first candle's open, not the latest
+        # candle's open.
+
+        regime_input["open"] = float(
+            first_candle["open"]
+        )
+
+        try:
+            regime_data = (
+                market_regime.analyze(
+                    latest=regime_input,
+                    previous_close=None,
+                )
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            print(
+                f"{symbol}: regime analysis "
+                f"failed: {error}"
+            )
+
+            time.sleep(
+                REQUEST_DELAY_SECONDS
+            )
+
+            continue
+
+        brain_decision = (
+            market_brain.decide(
+                regime_data=regime_data,
+            )
+        )
+
+        selected_strategy = str(
+            brain_decision.get(
+                "recommended_strategy",
+                "VWAP_PULLBACK",
+            )
+        )
+
+        try:
+            strategy = (
+                StrategyFactory.get(
+                    selected_strategy
+                )
+            )
+        except ValueError as error:
+            print(
+                f"{symbol}: {error}"
+            )
+
+            time.sleep(
+                REQUEST_DELAY_SECONDS
+            )
+
+            continue
+
+        # Pass the full dataframe so ORB
+        # can still access the 09:15–09:30
+        # opening candles.
+
+        strategy_signal = (
+            strategy.analyze(
+                dataframe
+            )
+        )
+
+        action = str(
+            strategy_signal.get(
+                "action",
+                "WAIT",
+            )
+        )
+
+        score = int(
+            strategy_signal.get(
+                "score",
+                0,
+            )
+        )
+
+        if not brain_decision.get(
+            "should_trade",
+            False,
+        ):
+            action = "WAIT"
+
+            signal_reason = (
+                "MarketBrain rejected trading. "
+                + str(
+                    strategy_signal.get(
+                        "reason",
+                        "",
+                    )
+                )
+            )
+        else:
+            signal_reason = str(
+                strategy_signal.get(
+                    "reason",
+                    "",
+                )
+            )
 
         result = {
             "symbol": symbol,
             "action": action,
             "score": score,
-            "price": float(latest["close"]),
-            "atr": float(latest["atr"]),
-            "rsi": float(latest["rsi"]),
-            "ema_20": float(latest["ema_20"]),
-            "ema_50": float(latest["ema_50"]),
-            "vwap": float(latest["vwap"]),
-            "macd": float(latest["macd"]),
+            "price": float(
+                latest["close"]
+            ),
+            "atr": float(
+                latest["atr"]
+            ),
+            "rsi": float(
+                latest["rsi"]
+            ),
+            "ema_20": float(
+                latest["ema_20"]
+            ),
+            "ema_50": float(
+                latest["ema_50"]
+            ),
+            "vwap": float(
+                latest["vwap"]
+            ),
+            "macd": float(
+                latest["macd"]
+            ),
             "macd_signal": float(
                 latest["macd_signal"]
             ),
-            "opening_high": opening_high,
+            "day_open": float(
+                first_candle["open"]
+            ),
+            "strategy": (
+                selected_strategy
+            ),
+            "strategy_class": (
+                type(strategy).__name__
+            ),
+            "strategy_reason": (
+                signal_reason
+            ),
+            "strategy_metadata": (
+                strategy_signal.get(
+                    "metadata",
+                    {},
+                )
+            ),
+            "suggested_entry": (
+                strategy_signal.get(
+                    "entry_price"
+                )
+            ),
+            "suggested_stop_loss": (
+                strategy_signal.get(
+                    "stop_loss"
+                )
+            ),
+            "suggested_target": (
+                strategy_signal.get(
+                    "target"
+                )
+            ),
+            "market_regime": (
+                regime_data
+            ),
+            "market_brain": (
+                brain_decision
+            ),
+            "brain_confidence": (
+                brain_decision.get(
+                    "confidence",
+                    0,
+                )
+            ),
+            "brain_risk_multiplier": (
+                brain_decision.get(
+                    "risk_multiplier",
+                    1.0,
+                )
+            ),
             "claude_approved": False,
             "claude_confidence": 0,
             "claude_reason": "",
@@ -200,14 +468,20 @@ def scan_market(
         print(
             f"{symbol} | "
             f"Price: ₹{result['price']:.2f} | "
+            f"Regime: "
+            f"{regime_data['trend']} | "
+            f"Strategy: "
+            f"{selected_strategy} | "
             f"Score: {score}/100 | "
-            f"Signal: {action}"
+            f"Signal: {action} | "
+            f"Reason: {signal_reason}"
         )
 
-        time.sleep(REQUEST_DELAY_SECONDS)
+        time.sleep(
+            REQUEST_DELAY_SECONDS
+        )
 
     return scan_results
-
 
 def get_claude_review(
     claude: ClaudeAnalyzer,
@@ -921,7 +1195,11 @@ def main() -> None:
         )
 
         if should_scan:
-            latest_scan = scan_market(market)
+            latest_scan = scan_market(
+            market=market,
+            market_regime=market_regime,
+            market_brain=market_brain,
+            )
 
             open_paper_trades(
     scan_results=latest_scan,
