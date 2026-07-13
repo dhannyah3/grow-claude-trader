@@ -72,6 +72,14 @@ def run_multi_day_backtest(
     start_date: date,
     end_date: date,
     starting_capital: float = 100000.0,
+    risk_per_trade_percent: float = 0.5,
+    slippage_bps: float = 5.0,
+    transaction_cost_rate: float = 0.001,
+    rsi_min: float = 50,
+    rsi_max: float = 70,
+    entry_cutoff: str = "15:30",
+    risk_reward_ratio: float = 2.0,
+    volume_multiplier: float = 1.0,
 ) -> List[Dict[str, Any]]:
     market = MarketData()
     results: List[Dict[str, Any]] = []
@@ -106,9 +114,22 @@ def run_multi_day_backtest(
         result = backtest_orb(
             candles_response=candles,
             starting_capital=current_capital,
-            risk_per_trade_percent=0.5,
-            slippage_bps=5.0,
-            transaction_cost_rate=0.001,
+            risk_per_trade_percent=(
+                risk_per_trade_percent
+            ),
+            risk_reward_ratio=(
+                risk_reward_ratio
+            ),
+            slippage_bps=slippage_bps,
+            transaction_cost_rate=(
+                transaction_cost_rate
+            ),
+            rsi_min=rsi_min,
+            rsi_max=rsi_max,
+            entry_cutoff=entry_cutoff,
+            volume_multiplier=(
+                volume_multiplier
+            ),
         )
 
         if result is None:

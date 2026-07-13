@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 import time
 import json
 from analytics.performance_coach import PerformanceCoach
@@ -486,13 +488,7 @@ def open_paper_trades(
                 f"₹{adjusted_risk:.2f}"
                 
             )
-        print(
-            f"Market regime for {symbol} | "
-            f"Trend: {regime_data['trend']} | "
-            f"Volatility: "
-            f"{regime_data['volatility']} | "
-            f"Gap: {regime_data['gap']}"
-        )
+        
 
 
 def monitor_positions(
