@@ -1,70 +1,116 @@
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
 class MarketRegime:
     """
-    Determines the current market regime.
+    Detects the current market regime using:
 
-    Initial version:
-    - Trend
-    - Volatility
-    - Gap
-
-    Future versions:
-    - ADX
-    - News sentiment
-    - Sector strength
-    - India VIX
+    - EMA trend
+    - ATR-based volatility
+    - Opening gap
     """
-    
+
     def analyze(
         self,
-        latest: Dict,
+        latest: Dict[str, Any],
         previous_close: Optional[float] = None,
-    ) -> Dict:
+    ) -> Dict[str, Any]:
+        required_fields = {
+            "open",
+            "close",
+            "ema_20",
+            "ema_50",
+            "atr",
+        }
 
-        ema20 = float(latest["ema_20"])
-        ema50 = float(latest["ema_50"])
+        missing_fields = (
+            required_fields
+            - set(latest.keys())
+        )
 
-        close = float(latest["close"])
+        if missing_fields:
+            raise ValueError(
+                "Missing market-regime fields: "
+                + ", ".join(
+                    sorted(missing_fields)
+                )
+            )
 
-        atr = float(latest["atr"])
+        open_price = float(
+            latest["open"]
+        )
 
-        open_price = float(latest["open"])
+        close = float(
+            latest["close"]
+        )
 
-        # -------------------
-        # Trend
-        # -------------------
+        ema20 = float(
+            latest["ema_20"]
+        )
 
-        if ema20 > ema50:
+        ema50 = float(
+            latest["ema_50"]
+        )
+
+        atr = float(
+            latest["atr"]
+        )
+
+        if close <= 0:
+            raise ValueError(
+                "Close price must be positive."
+            )
+
+        if open_price <= 0:
+            raise ValueError(
+                "Open price must be positive."
+            )
+
+        if atr < 0:
+            raise ValueError(
+                "ATR cannot be negative."
+            )
+
+        # -------------------------
+        # Trend classification
+        # -------------------------
+
+        ema_difference_percent = (
+            abs(ema20 - ema50)
+            / close
+            * 100
+        )
+
+        if ema_difference_percent < 0.10:
+            trend = "RANGE_BOUND"
+
+        elif ema20 > ema50:
             trend = "TRENDING"
 
-        elif ema20 < ema50:
+        else:
             trend = "DOWNTREND"
 
-        else:
-            trend = "RANGE"
-
-        # -------------------
-        # Volatility
-        # -------------------
+        # -------------------------
+        # Volatility classification
+        # -------------------------
 
         atr_percent = (
             atr / close
-        ) * 100
+            * 100
+        )
 
-        if atr_percent > 1.5:
+        if atr_percent >= 1.50:
             volatility = "HIGH"
 
-        elif atr_percent > 0.8:
+        elif atr_percent >= 0.80:
             volatility = "MEDIUM"
 
         else:
             volatility = "LOW"
 
-        # -------------------
-        # Gap
-        # -------------------
+        # -------------------------
+        # Opening-gap classification
+        # -------------------------
 
         if (
             previous_close is None
@@ -74,29 +120,40 @@ class MarketRegime:
             gap = "UNKNOWN"
 
         else:
-            gap_percent = (
-                (open_price - previous_close)
+            raw_gap_percent = (
+                (
+                    open_price
+                    - previous_close
+                )
                 / previous_close
-            ) * 100
+                * 100
+            )
 
-            if gap_percent > 1:
+            gap_percent = round(
+                raw_gap_percent,
+                2,
+            )
+
+            if gap_percent >= 1.0:
                 gap = "GAP_UP"
 
-            elif gap_percent < -1:
+            elif gap_percent <= -1.0:
                 gap = "GAP_DOWN"
 
             else:
                 gap = "NO_GAP"
+
         return {
             "trend": trend,
             "volatility": volatility,
             "gap": gap,
-            "gap_percent": round(
-                gap_percent,
-                2,
-            ),
+            "gap_percent": gap_percent,
             "atr_percent": round(
                 atr_percent,
                 2,
+            ),
+            "ema_difference_percent": round(
+                ema_difference_percent,
+                3,
             ),
         }
