@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
+from intelligence.market_brain import MarketBrain
+from strategies.factory import StrategyFactory
 import time
 import json
 from analytics.performance_coach import PerformanceCoach
@@ -253,7 +255,22 @@ def open_paper_trades(
     performance_coach: PerformanceCoach,
     adaptive_filter: AdaptiveTradeFilter,
     market_regime: MarketRegime,
+    market_brain: MarketBrain,
 ) -> None:
+    """
+    Review scanner signals and open approved paper trades.
+
+    Decision flow:
+
+    Scanner
+    -> Claude review
+    -> Market regime
+    -> Market Brain
+    -> Adaptive filter
+    -> Risk manager
+    -> PaperTrader
+    """
+
     if not can_open_new_trade():
         print("New entries are currently disabled.")
         return
@@ -262,12 +279,21 @@ def open_paper_trades(
         if result.get("action") != "BUY":
             continue
 
-        symbol = result["symbol"]
+        symbol = str(
+            result.get("symbol", "")
+        ).strip()
 
-        if trader.get_open_position(symbol) is not None:
+        if not symbol:
+            print("Skipping result without a symbol.")
+            continue
+
+        if (
+            trader.get_open_position(symbol)
+            is not None
+        ):
             print(
                 f"{symbol}: paper position "
-                f"already open."
+                "already open."
             )
             continue
 
@@ -279,16 +305,25 @@ def open_paper_trades(
                 trader.open_positions
             ),
         ):
+            print(
+                "Risk manager rejected new trades."
+            )
             break
+
+        # ---------------------------------
+        # Claude review
+        # ---------------------------------
 
         review = get_claude_review(
             claude=claude,
             result=result,
         )
+
         save_claude_review(
-    symbol=result["symbol"],
-    review=review,
-)
+            symbol=symbol,
+            review=review,
+        )
+
         approved = bool(
             review.get("approved", False)
         )
@@ -297,13 +332,15 @@ def open_paper_trades(
             review.get("confidence", 0)
         )
 
-        reason = str(
+        claude_reason = str(
             review.get("reason", "")
         )
 
         result["claude_approved"] = approved
         result["claude_confidence"] = confidence
-        result["claude_reason"] = reason
+        result["claude_reason"] = (
+            claude_reason
+        )
 
         if (
             not approved
@@ -313,122 +350,50 @@ def open_paper_trades(
             print(
                 f"Claude rejected {symbol} | "
                 f"Confidence: {confidence}% | "
-                f"Reason: {reason}"
+                f"Reason: {claude_reason}"
             )
             continue
 
         print(
             f"Claude approved {symbol} | "
             f"Confidence: {confidence}% | "
-            f"Reason: {reason}"
+            f"Reason: {claude_reason}"
         )
 
-        strategy = "ORB_BREAKOUT"
+        # ---------------------------------
+        # Validate indicator values
+        # ---------------------------------
 
-        market_condition = (
-            "TRENDING"
-            if result.get("ema_20", 0)
-            > result.get("ema_50", 0)
-            else "RANGE_BOUND"
+        price = float(
+            result.get("price", 0) or 0
         )
 
-        performance_report = (
-            performance_coach.analyze()
+        ema_20 = float(
+            result.get("ema_20", 0) or 0
         )
 
-        regime_data = market_regime.analyze(
-            latest={
-                "open": result.get(
-                    "price",
-                    0,
-                ),
-                "close": result.get(
-                    "price",
-                    0,
-                ),
-                "ema_20": result.get(
-                    "ema_20",
-                    0,
-                ),
-                "ema_50": result.get(
-                    "ema_50",
-                    0,
-                ),
-                "atr": result.get(
-                    "atr",
-                    0,
-                ),
-            },
-            previous_close=None,
-        )
-
-        adaptive_decision = adaptive_filter.evaluate(
-            strategy=strategy,
-            confidence=confidence,
-            market_condition=market_condition,
-            performance_report=performance_report,
-            regime_data=regime_data,
-        )
-
-        result["strategy"] = strategy
-        result["market_condition"] = (
-            market_condition
-        )
-        result["market_regime"] = (
-            regime_data
-        )
-        result["adaptive_take_trade"] = (
-            adaptive_decision["take_trade"]
-        )
-        result["position_multiplier"] = (
-            adaptive_decision[
-                "position_multiplier"
-            ]
-        )
-        result["adaptive_reasons"] = (
-            adaptive_decision["reasons"]
-        )
-
-        print(
-            f"Adaptive filter for {symbol}:"
-        )
-
-        for adaptive_reason in adaptive_decision[
-            "reasons"
-        ]:
-            print(f"- {adaptive_reason}")
-
-        if not adaptive_decision["take_trade"]:
-            print(
-                f"{symbol}: trade rejected by "
-                f"adaptive filter."
-            )
-            continue
-
-        position_multiplier = float(
-            adaptive_decision[
-                "position_multiplier"
-            ]
-        )
-
-        quote = market.get_live_quote(symbol)
-
-        if (
-            not quote
-            or quote.get("last_price") is None
-        ):
-            print(
-                f"{symbol}: live quote unavailable."
-            )
-            continue
-
-        entry_price = float(
-            quote["last_price"]
+        ema_50 = float(
+            result.get("ema_50", 0) or 0
         )
 
         atr = float(
-            result.get("atr", 0)
+            result.get("atr", 0) or 0
         )
+
+        if price <= 0:
+            print(
+                f"{symbol}: invalid scanner price."
+            )
+            continue
+
+        if (
+            ema_20 <= 0
+            or ema_50 <= 0
+        ):
+            print(
+                f"{symbol}: invalid EMA values."
+            )
+            continue
 
         if atr <= 0:
             print(
@@ -436,8 +401,257 @@ def open_paper_trades(
             )
             continue
 
-        stop_loss = entry_price - atr
-        target_price = entry_price + (2 * atr)
+        # ---------------------------------
+        # Market regime
+        # ---------------------------------
+
+        regime_data = market_regime.analyze(
+            latest={
+                "open": price,
+                "close": price,
+                "ema_20": ema_20,
+                "ema_50": ema_50,
+                "atr": atr,
+            },
+            previous_close=None,
+        )
+
+        # Note:
+        # previous_close is currently unavailable
+        # here, so gap will be UNKNOWN.
+        # We will connect the true day open and
+        # previous close later.
+
+        # ---------------------------------
+        # Market Brain
+        # ---------------------------------
+
+        brain_decision = market_brain.decide(
+            regime_data=regime_data,
+        )
+
+        selected_strategy = str(
+            brain_decision[
+                "recommended_strategy"
+            ]
+        )
+
+        try:
+            strategy_instance = (
+                StrategyFactory.get(
+                    selected_strategy
+                )
+            )
+        except ValueError as error:
+            print(
+                f"{symbol}: {error}"
+            )
+            continue
+
+        print(
+            f"Market Brain for {symbol}:"
+        )
+
+        print(
+            f"- Strategy: "
+            f"{selected_strategy}"
+        )
+
+        print(
+            f"- Confidence: "
+            f"{brain_decision['confidence']}%"
+        )
+
+        print(
+            f"- Risk multiplier: "
+            f"{brain_decision['risk_multiplier']}"
+        )
+
+        for brain_reason in (
+            brain_decision["reasons"]
+        ):
+            print(f"- {brain_reason}")
+
+        if not brain_decision["should_trade"]:
+            print(
+                f"{symbol}: Market Brain "
+                "rejected the trade."
+            )
+            continue
+
+        # ---------------------------------
+        # Adaptive performance filter
+        # ---------------------------------
+
+        performance_report = (
+            performance_coach.analyze()
+        )
+
+        market_condition = str(
+            regime_data.get(
+                "trend",
+                "UNKNOWN",
+            )
+        )
+
+        adaptive_decision = (
+            adaptive_filter.evaluate(
+                strategy=selected_strategy,
+                confidence=confidence,
+                market_condition=(
+                    market_condition
+                ),
+                performance_report=(
+                    performance_report
+                ),
+                regime_data=regime_data,
+            )
+        )
+
+        print(
+            f"Adaptive filter for {symbol}:"
+        )
+
+        for adaptive_reason in (
+            adaptive_decision["reasons"]
+        ):
+            print(f"- {adaptive_reason}")
+
+        if not adaptive_decision["take_trade"]:
+            print(
+                f"{symbol}: trade rejected by "
+                "adaptive filter."
+            )
+            continue
+
+        # Combine MarketBrain risk reduction
+        # with AdaptiveTradeFilter sizing.
+
+        brain_multiplier = float(
+            brain_decision[
+                "risk_multiplier"
+            ]
+        )
+
+        adaptive_multiplier = float(
+            adaptive_decision[
+                "position_multiplier"
+            ]
+        )
+
+        final_position_multiplier = (
+            brain_multiplier
+            * adaptive_multiplier
+        )
+
+        final_position_multiplier = max(
+            0.0,
+            min(
+                final_position_multiplier,
+                1.0,
+            ),
+        )
+
+        result["strategy"] = (
+            selected_strategy
+        )
+
+        result["strategy_class"] = (
+            type(strategy_instance).__name__
+        )
+
+        result["market_condition"] = (
+            market_condition
+        )
+
+        result["market_regime"] = (
+            regime_data
+        )
+
+        result["market_brain"] = (
+            brain_decision
+        )
+
+        result["adaptive_take_trade"] = (
+            adaptive_decision["take_trade"]
+        )
+
+        result["adaptive_reasons"] = (
+            adaptive_decision["reasons"]
+        )
+
+        result["brain_multiplier"] = (
+            brain_multiplier
+        )
+
+        result["adaptive_multiplier"] = (
+            adaptive_multiplier
+        )
+
+        result["position_multiplier"] = (
+            round(
+                final_position_multiplier,
+                4,
+            )
+        )
+
+        if final_position_multiplier <= 0:
+            print(
+                f"{symbol}: final position "
+                "multiplier is zero."
+            )
+            continue
+
+        # ---------------------------------
+        # Live quote
+        # ---------------------------------
+
+        quote = market.get_live_quote(
+            symbol
+        )
+
+        if (
+            not quote
+            or quote.get("last_price")
+            is None
+        ):
+            print(
+                f"{symbol}: live quote "
+                "unavailable."
+            )
+            continue
+
+        entry_price = float(
+            quote["last_price"]
+        )
+
+        if entry_price <= 0:
+            print(
+                f"{symbol}: invalid live price."
+            )
+            continue
+
+        # Current stop and target model:
+        # 1 ATR stop, 2 ATR target.
+
+        stop_loss = (
+            entry_price - atr
+        )
+
+        target_price = (
+            entry_price + (2 * atr)
+        )
+
+        if stop_loss <= 0:
+            print(
+                f"{symbol}: calculated stop "
+                "loss is invalid."
+            )
+            continue
+
+        # ---------------------------------
+        # Position sizing
+        # ---------------------------------
 
         plan = risk_manager.trade_plan(
             entry_price=entry_price,
@@ -446,18 +660,18 @@ def open_paper_trades(
         )
 
         base_quantity = int(
-            plan["quantity"]
+            plan.get("quantity", 0)
         )
 
         quantity = int(
             base_quantity
-            * position_multiplier
+            * final_position_multiplier
         )
 
         if quantity <= 0:
             print(
-                f"{symbol}: adaptive quantity "
-                f"is zero."
+                f"{symbol}: adjusted quantity "
+                "is zero."
             )
             continue
 
@@ -469,26 +683,39 @@ def open_paper_trades(
             target=target_price,
         )
 
-        if opened:
-            adjusted_risk = (
-                float(plan["risk_amount"])
-                * position_multiplier
+        if not opened:
+            print(
+                f"{symbol}: paper trade "
+                "was not opened."
             )
+            continue
+
+        adjusted_risk = (
+            float(
+                plan.get(
+                    "risk_amount",
+                    0.0,
+                )
+            )
+            * final_position_multiplier
+        )
 
         print(
-                f"{symbol} paper trade opened | "
-                f"Qty: {quantity} | "
-                f"Base Qty: {base_quantity} | "
-                f"Multiplier: "
-                f"{position_multiplier:.2f} | "
-                f"Entry: ₹{entry_price:.2f} | "
-                f"Stop: ₹{stop_loss:.2f} | "
-                f"Target: ₹{target_price:.2f} | "
-                f"Estimated Risk: "
-                f"₹{adjusted_risk:.2f}"
-                
-            )
-        
+            f"{symbol} paper trade opened | "
+            f"Strategy: {selected_strategy} | "
+            f"Qty: {quantity} | "
+            f"Base Qty: {base_quantity} | "
+            f"Brain: {brain_multiplier:.2f} | "
+            f"Adaptive: "
+            f"{adaptive_multiplier:.2f} | "
+            f"Final multiplier: "
+            f"{final_position_multiplier:.2f} | "
+            f"Entry: ₹{entry_price:.2f} | "
+            f"Stop: ₹{stop_loss:.2f} | "
+            f"Target: ₹{target_price:.2f} | "
+            f"Estimated Risk: "
+            f"₹{adjusted_risk:.2f}"
+        )        
 
 
 def monitor_positions(
@@ -614,6 +841,7 @@ def build_watchlist_display(
 def main() -> None:
     market = MarketData()
     market_regime = MarketRegime()
+    market_brain = MarketBrain()
     claude = ClaudeAnalyzer()
 
     performance_coach = PerformanceCoach()
@@ -696,16 +924,18 @@ def main() -> None:
             latest_scan = scan_market(market)
 
             open_paper_trades(
-                scan_results=latest_scan,
-                market=market,
-                trader=trader,
-                risk_manager=risk_manager,
-                claude=claude,
-                performance_coach=(
-                    performance_coach
-                ),
-                adaptive_filter=adaptive_filter,
-            )
+    scan_results=latest_scan,
+    market=market,
+    trader=trader,
+    risk_manager=risk_manager,
+    claude=claude,
+    performance_coach=(
+        performance_coach
+    ),
+    adaptive_filter=adaptive_filter,
+    market_regime=market_regime,
+    market_brain=market_brain,
+)
 
             last_scan_time = current_timestamp
 
