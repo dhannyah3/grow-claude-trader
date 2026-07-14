@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 from analytics.trade_journal import TradeJournal
 
 
@@ -33,6 +34,7 @@ class PaperTrader:
         self._load_closed_trades()
         self._load_open_positions()
         self._recalculate_cash_balance()
+        
 
     def _prepare_files(self) -> None:
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -156,29 +158,34 @@ class PaperTrader:
                 stop_loss = float(position["stop_loss"])
 
                 self.open_positions[symbol] = {
-    "symbol": str(
-        position.get("symbol", symbol)
-    ),
-    "quantity": int(position["quantity"]),
-    "entry_price": float(
-        position["entry_price"]
-    ),
-    "stop_loss": stop_loss,
-    "initial_stop_loss": float(
-        position.get(
-            "initial_stop_loss",
-            stop_loss,
-        )
-    ),
-    "target": float(
-        position["target"]
-    ),
-    "entry_time": entry_time,
-    "metadata": position.get(
-        "metadata",
-        {},
-    ),
-}
+                    "symbol": str(
+                        position.get(
+                            "symbol",
+                            symbol,
+                        )
+                    ),
+                    "quantity": int(
+                        position["quantity"]
+                    ),
+                    "entry_price": float(
+                        position["entry_price"]
+                    ),
+                    "stop_loss": stop_loss,
+                    "initial_stop_loss": float(
+                        position.get(
+                            "initial_stop_loss",
+                            stop_loss,
+                        )
+                    ),
+                    "target": float(
+                        position["target"]
+                    ),
+                    "entry_time": entry_time,
+                    "metadata": position.get(
+                        "metadata",
+                        {},
+                    ),
+                }
 
             except (
                 KeyError,
@@ -195,22 +202,22 @@ class PaperTrader:
 
         for symbol, position in self.open_positions.items():
             data[symbol] = {
-              "symbol": position["symbol"],
-              "quantity": position["quantity"],
-              "entry_price": position["entry_price"],
-              "stop_loss": position["stop_loss"],
-              "initial_stop_loss": position[
-              "initial_stop_loss"
-               ],
-              "target": position["target"],
-              "entry_time": position[
-              "entry_time"
-            ].isoformat(),
-            "metadata": position.get(
-            "metadata",
-        {},
-    ),
-}
+                "symbol": position["symbol"],
+                "quantity": position["quantity"],
+                "entry_price": position["entry_price"],
+                "stop_loss": position["stop_loss"],
+                "initial_stop_loss": position[
+                    "initial_stop_loss"
+                ],
+                "target": position["target"],
+                "entry_time": position[
+                    "entry_time"
+                ].isoformat(),
+                "metadata": position.get(
+                    "metadata",
+                    {},
+                ),
+            }
 
         temporary_file = self.positions_file.with_suffix(".tmp")
 
@@ -236,26 +243,48 @@ class PaperTrader:
         )
 
     def open_trade(
-    self,
-    symbol: str,
-    quantity: int,
-    entry_price: float,
-    stop_loss: float,
-    target: float,
-    metadata: Optional[
-        Dict[str, Any]
-    ] = None,
-) -> bool:
+        self,
+        symbol: str,
+        quantity: int,
+        entry_price: float,
+        stop_loss: float,
+        target: float,
+        metadata: Optional[
+            Dict[str, Any]
+        ] = None,
+    ) -> bool:
+        symbol = str(
+            symbol
+        ).strip().upper()
+
+        if not symbol:
+            print(
+                "Paper trade requires a symbol."
+            )
+            return False
+
         if symbol in self.open_positions:
-            print(f"{symbol}: position already open.")
+            print(
+                f"{symbol}: position already open."
+            )
             return False
 
         if quantity <= 0:
-            print("Quantity must be greater than zero.")
+            print(
+                "Quantity must be greater than zero."
+            )
             return False
 
         if entry_price <= 0:
-            print("Entry price must be greater than zero.")
+            print(
+                "Entry price must be greater than zero."
+            )
+            return False
+
+        if stop_loss <= 0:
+            print(
+                "Stop loss must be greater than zero."
+            )
             return False
 
         if stop_loss >= entry_price:
@@ -283,17 +312,30 @@ class PaperTrader:
             return False
 
         position = {
-    "symbol": symbol,
-    "quantity": int(quantity),
-    "entry_price": float(entry_price),
-    "stop_loss": float(stop_loss),
-    "initial_stop_loss": float(stop_loss),
-    "target": float(target),
-    "entry_time": datetime.now(),
-    "metadata": metadata or {},
-}
+            "symbol": symbol,
+            "quantity": int(
+                quantity
+            ),
+            "entry_price": float(
+                entry_price
+            ),
+            "stop_loss": float(
+                stop_loss
+            ),
+            "initial_stop_loss": float(
+                stop_loss
+            ),
+            "target": float(
+                target
+            ),
+            "entry_time": datetime.now(),
+            "metadata": metadata or {},
+        }
 
-        self.open_positions[symbol] = position
+        self.open_positions[
+            symbol
+        ] = position
+
         self.cash_balance -= trade_value
 
         self._save_open_positions()
@@ -306,13 +348,94 @@ class PaperTrader:
 
         return True
 
+    def update_stop_loss(
+        self,
+        symbol: str,
+        stop_loss: float,
+    ) -> bool:
+        normalized_symbol = str(
+            symbol
+        ).strip().upper()
+
+        position = self.open_positions.get(
+            normalized_symbol
+        )
+
+        if position is None:
+            print(
+                f"{normalized_symbol}: no open "
+                "paper position."
+            )
+            return False
+
+        try:
+            new_stop_loss = float(
+                stop_loss
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            print(
+                f"{normalized_symbol}: invalid "
+                "stop-loss value."
+            )
+            return False
+
+        if new_stop_loss <= 0:
+            print(
+                f"{normalized_symbol}: stop loss "
+                "must be positive."
+            )
+            return False
+
+        current_stop_loss = float(
+            position["stop_loss"]
+        )
+
+        if new_stop_loss <= current_stop_loss:
+            return False
+
+        entry_price = float(
+            position["entry_price"]
+        )
+
+        if new_stop_loss > entry_price:
+            print(
+                f"{normalized_symbol}: stop loss "
+                "cannot be above entry price in "
+                "the current long-only paper model."
+            )
+            return False
+
+        position["stop_loss"] = (
+            new_stop_loss
+        )
+
+        self._save_open_positions()
+
+        print(
+            f"{normalized_symbol}: Paper stop "
+            f"updated ₹{current_stop_loss:.2f} "
+            f"→ ₹{new_stop_loss:.2f}"
+        )
+
+        return True
+
     def close_trade(
         self,
         symbol: str,
         exit_price: float,
         exit_reason: str,
     ) -> Optional[Dict[str, Any]]:
-        position = self.open_positions.get(symbol)
+        symbol = str(
+            symbol
+        ).strip().upper()
+
+        position = self.open_positions.get(
+            symbol
+        )
 
         if position is None:
             print(f"{symbol}: no open paper position.")
@@ -433,7 +556,13 @@ class PaperTrader:
         symbol: str,
         current_price: float,
     ) -> Optional[Dict[str, Any]]:
-        position = self.open_positions.get(symbol)
+        symbol = str(
+            symbol
+        ).strip().upper()
+
+        position = self.open_positions.get(
+            symbol
+        )
 
         if position is None:
             return None
@@ -505,7 +634,13 @@ class PaperTrader:
         self,
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
-        position = self.open_positions.get(symbol)
+        symbol = str(
+            symbol
+        ).strip().upper()
+
+        position = self.open_positions.get(
+            symbol
+        )
 
         if position is None:
             return None

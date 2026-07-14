@@ -1,24 +1,28 @@
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class TradeLifecycle:
     """
     Manages the complete lifecycle of every trade.
 
-    Version 1 supports:
+    Version 2 supports:
     - Opening trades
-    - Updating prices
+    - Preventing duplicate trades
+    - Updating live prices
     - Calculating unrealized P&L
+    - Tracking highest and lowest prices
+    - Moving stop loss to breakeven
+    - Detecting stop-loss and target exits
     - Closing trades
     """
 
     def __init__(self) -> None:
-        # Active trades indexed by symbol
         self.active_trades: Dict[
             str,
             Dict[str, Any],
         ] = {}
+
     def open_trade(
         self,
         symbol: str,
@@ -27,17 +31,31 @@ class TradeLifecycle:
         entry_price: float,
         stop_loss: float,
         target: float,
-        metadata: Dict[str, Any] = None,
+        metadata: Optional[
+            Dict[str, Any]
+        ] = None,
     ) -> bool:
+        symbol = str(
+            symbol
+        ).strip().upper()
+
+        if not symbol:
+            print(
+                "Lifecycle trade requires a symbol."
+            )
+            return False
+
         if symbol in self.active_trades:
             print(
-                f"{symbol}: lifecycle trade already exists."
+                f"{symbol}: lifecycle trade "
+                "already exists."
             )
             return False
 
         if quantity <= 0:
             print(
-                f"{symbol}: quantity must be positive."
+                f"{symbol}: quantity must "
+                "be positive."
             )
             return False
 
@@ -47,13 +65,16 @@ class TradeLifecycle:
             < target
         ):
             print(
-                f"{symbol}: invalid entry, stop, or target."
+                f"{symbol}: invalid entry, "
+                "stop, or target."
             )
             return False
 
         trade = {
             "symbol": symbol,
-            "strategy": strategy,
+            "strategy": str(
+                strategy
+            ),
             "status": "ACTIVE",
             "quantity": int(
                 quantity
@@ -67,6 +88,10 @@ class TradeLifecycle:
             "stop_loss": float(
                 stop_loss
             ),
+            "initial_stop_loss": float(
+                stop_loss
+            ),
+            "breakeven_activated": False,
             "target": float(
                 target
             ),
@@ -85,7 +110,9 @@ class TradeLifecycle:
             "metadata": metadata or {},
         }
 
-        self.active_trades[symbol] = trade
+        self.active_trades[
+            symbol
+        ] = trade
 
         print(
             f"Lifecycle OPEN: {symbol} | "
@@ -93,27 +120,40 @@ class TradeLifecycle:
             f"Entry: ₹{entry_price:.2f}"
         )
 
-        return True   
+        return True
+
     def has_open_trade(
         self,
         symbol: str,
     ) -> bool:
-        return symbol in self.active_trades
-    
+        normalized_symbol = str(
+            symbol
+        ).strip().upper()
+
+        return (
+            normalized_symbol
+            in self.active_trades
+        )
+
     def update_price(
         self,
         symbol: str,
         current_price: float,
     ) -> Dict[str, Any]:
-        trade = self.active_trades.get(
+        normalized_symbol = str(
             symbol
+        ).strip().upper()
+
+        trade = self.active_trades.get(
+            normalized_symbol
         )
 
         if trade is None:
             return {
                 "updated": False,
                 "reason": (
-                    f"{symbol}: no active lifecycle trade."
+                    f"{normalized_symbol}: no active "
+                    "lifecycle trade."
                 ),
             }
 
@@ -121,10 +161,14 @@ class TradeLifecycle:
             return {
                 "updated": False,
                 "reason": (
-                    f"{symbol}: current price must "
-                    "be positive."
+                    f"{normalized_symbol}: current "
+                    "price must be positive."
                 ),
             }
+
+        current_price = float(
+            current_price
+        )
 
         entry_price = float(
             trade["entry_price"]
@@ -134,7 +178,7 @@ class TradeLifecycle:
             trade["quantity"]
         )
 
-        trade["current_price"] = float(
+        trade["current_price"] = (
             current_price
         )
 
@@ -142,22 +186,18 @@ class TradeLifecycle:
             float(
                 trade["highest_price"]
             ),
-            float(
-                current_price
-            ),
+            current_price,
         )
 
         trade["lowest_price"] = min(
             float(
                 trade["lowest_price"]
             ),
-            float(
-                current_price
-            ),
+            current_price,
         )
 
         unrealized_pnl = (
-            float(current_price)
+            current_price
             - entry_price
         ) * quantity
 
@@ -165,12 +205,61 @@ class TradeLifecycle:
             unrealized_pnl
         )
 
+        initial_stop_loss = float(
+            trade["initial_stop_loss"]
+        )
+
+        initial_risk = (
+            entry_price
+            - initial_stop_loss
+        )
+
+        breakeven_trigger = (
+            entry_price
+            + initial_risk
+        )
+
+        breakeven_activated_now = False
+
+        if (
+            initial_risk > 0
+            and not bool(
+                trade[
+                    "breakeven_activated"
+                ]
+            )
+            and current_price
+            >= breakeven_trigger
+        ):
+            trade["stop_loss"] = float(
+                entry_price
+            )
+
+            trade[
+                "breakeven_activated"
+            ] = True
+
+            breakeven_activated_now = True
+
+            print(
+                f"{normalized_symbol}: stop "
+                f"moved to breakeven "
+                f"₹{entry_price:.2f}"
+            )
+
         exit_signal = None
 
         if current_price <= float(
             trade["stop_loss"]
         ):
-            exit_signal = "STOP_LOSS"
+            if bool(
+                trade[
+                    "breakeven_activated"
+                ]
+            ):
+                exit_signal = "BREAKEVEN_STOP"
+            else:
+                exit_signal = "STOP_LOSS"
 
         elif current_price >= float(
             trade["target"]
@@ -179,10 +268,8 @@ class TradeLifecycle:
 
         return {
             "updated": True,
-            "symbol": symbol,
-            "current_price": float(
-                current_price
-            ),
+            "symbol": normalized_symbol,
+            "current_price": current_price,
             "unrealized_pnl": round(
                 unrealized_pnl,
                 2,
@@ -193,24 +280,47 @@ class TradeLifecycle:
             "lowest_price": float(
                 trade["lowest_price"]
             ),
+            "stop_loss": float(
+                trade["stop_loss"]
+            ),
+            "initial_stop_loss": (
+                initial_stop_loss
+            ),
+            "breakeven_trigger": round(
+                breakeven_trigger,
+                2,
+            ),
+            "breakeven_activated": bool(
+                trade[
+                    "breakeven_activated"
+                ]
+            ),
+            "breakeven_activated_now": (
+                breakeven_activated_now
+            ),
             "exit_signal": exit_signal,
         }
-    
+
     def close_trade(
         self,
         symbol: str,
         exit_price: float,
         exit_reason: str,
     ) -> Dict[str, Any]:
-        trade = self.active_trades.get(
+        normalized_symbol = str(
             symbol
+        ).strip().upper()
+
+        trade = self.active_trades.get(
+            normalized_symbol
         )
 
         if trade is None:
             return {
                 "closed": False,
                 "reason": (
-                    f"{symbol}: no active lifecycle trade."
+                    f"{normalized_symbol}: no active "
+                    "lifecycle trade."
                 ),
             }
 
@@ -218,9 +328,14 @@ class TradeLifecycle:
             return {
                 "closed": False,
                 "reason": (
-                    f"{symbol}: exit price must be positive."
+                    f"{normalized_symbol}: exit "
+                    "price must be positive."
                 ),
             }
+
+        exit_price = float(
+            exit_price
+        )
 
         entry_price = float(
             trade["entry_price"]
@@ -231,14 +346,12 @@ class TradeLifecycle:
         )
 
         realized_pnl = (
-            float(exit_price)
+            exit_price
             - entry_price
         ) * quantity
 
         trade["status"] = "COMPLETED"
-        trade["exit_price"] = float(
-            exit_price
-        )
+        trade["exit_price"] = exit_price
         trade["exit_reason"] = str(
             exit_reason
         )
@@ -247,7 +360,7 @@ class TradeLifecycle:
             realized_pnl
         )
         trade["unrealized_pnl"] = 0.0
-        trade["current_price"] = float(
+        trade["current_price"] = (
             exit_price
         )
 
@@ -255,10 +368,13 @@ class TradeLifecycle:
             trade
         )
 
-        del self.active_trades[symbol]
+        del self.active_trades[
+            normalized_symbol
+        ]
 
         print(
-            f"Lifecycle CLOSE: {symbol} | "
+            f"Lifecycle CLOSE: "
+            f"{normalized_symbol} | "
             f"Exit: ₹{exit_price:.2f} | "
             f"P&L: ₹{realized_pnl:.2f} | "
             f"Reason: {exit_reason}"
@@ -268,19 +384,33 @@ class TradeLifecycle:
             "closed": True,
             "trade": completed_trade,
         }
-    
+
     def get_trade(
         self,
         symbol: str,
     ) -> Dict[str, Any]:
-        return self.active_trades.get(
-            symbol,
-            {},
+        normalized_symbol = str(
+            symbol
+        ).strip().upper()
+
+        trade = self.active_trades.get(
+            normalized_symbol
+        )
+
+        if trade is None:
+            return {}
+
+        return dict(
+            trade
         )
 
     def get_all_open_trades(
         self,
     ) -> Dict[str, Dict[str, Any]]:
-        return dict(
-            self.active_trades
-        )
+        return {
+            symbol: dict(
+                trade
+            )
+            for symbol, trade
+            in self.active_trades.items()
+        }

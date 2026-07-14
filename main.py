@@ -1106,6 +1106,34 @@ def monitor_positions(
             "updated",
             False,
         ):
+            lifecycle_stop = float(
+                lifecycle_update.get(
+                    "stop_loss",
+                    0.0,
+                )
+                or 0.0
+            )
+
+            paper_position = (
+                trader.get_open_position(
+                    symbol
+                )
+            )
+
+            if (
+                paper_position is not None
+                and lifecycle_stop
+                > float(
+                    paper_position[
+                        "stop_loss"
+                    ]
+                )
+            ):
+                trader.update_stop_loss(
+                    symbol=symbol,
+                    stop_loss=lifecycle_stop,
+                )
+
             print(
                 f"{symbol} | "
                 f"Current: ₹{current_price:.2f} | "
