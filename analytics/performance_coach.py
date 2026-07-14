@@ -51,6 +51,7 @@ class PerformanceCoach:
                 "strategy_performance": {},
                 "confidence_performance": {},
                 "market_condition_performance": {},
+                "strategy_regime_performance": {},
                 "volatility_performance": {},
                 "gap_performance": {},
                 "market_quality_performance": {},
@@ -65,6 +66,7 @@ class PerformanceCoach:
         strategy_stats = self._create_stats_group()
         confidence_stats = self._create_stats_group()
         market_stats = self._create_stats_group()
+        strategy_regime_stats = self._create_stats_group()
         volatility_stats = self._create_stats_group()
         gap_stats = self._create_stats_group()
         market_quality_stats = self._create_stats_group()
@@ -101,6 +103,11 @@ class PerformanceCoach:
                     "UNKNOWN",
                 )
             ).upper()
+
+            strategy_regime_key = (
+                f"{strategy}|"
+                f"{market_condition}"
+            )
 
             claude_data = entry.get(
                 "claude",
@@ -217,6 +224,14 @@ class PerformanceCoach:
             )
 
             self._update_group(
+                strategy_regime_stats[
+                    strategy_regime_key
+                ],
+                result,
+                pnl,
+            )
+
+            self._update_group(
                 volatility_stats[
                     volatility
                 ],
@@ -263,6 +278,12 @@ class PerformanceCoach:
         market_condition_performance = (
             self._finalize_groups(
                 market_stats
+            )
+        )
+
+        strategy_regime_performance = (
+            self._finalize_groups(
+                strategy_regime_stats
             )
         )
 
@@ -316,6 +337,9 @@ class PerformanceCoach:
             ),
             "market_condition_performance": (
                 market_condition_performance
+            ),
+            "strategy_regime_performance": (
+                strategy_regime_performance
             ),
             "volatility_performance": (
                 volatility_performance
@@ -640,6 +664,13 @@ if __name__ == "__main__":
     print(
         report[
             "market_condition_performance"
+        ]
+    )
+
+    print("\nStrategy + Regime Performance:")
+    print(
+        report[
+            "strategy_regime_performance"
         ]
     )
 
