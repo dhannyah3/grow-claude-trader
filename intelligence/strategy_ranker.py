@@ -1,27 +1,28 @@
 from typing import Any, Dict, List
-from analytics.performance_coach import PerformanceCoach
+
+from analytics.learning_engine import LearningEngine
+
 
 class StrategyRanker:
     """
     Scores every registered strategy against the
     current market regime and intelligence state.
     """
+
     def __init__(
         self,
         journal_file: str = "logs/trade_journal.json",
         minimum_learning_sample: int = 20,
         maximum_learning_adjustment: int = 10,
     ) -> None:
-        self.performance_coach = PerformanceCoach(
+        self.learning_engine = LearningEngine(
             journal_file=journal_file,
-        )
-
-        self.minimum_learning_sample = int(
-            minimum_learning_sample
-        )
-
-        self.maximum_learning_adjustment = int(
-            maximum_learning_adjustment
+            minimum_sample_size=(
+                minimum_learning_sample
+            ),
+            maximum_adjustment=(
+                maximum_learning_adjustment
+            ),
         )
 
     def rank(
@@ -109,23 +110,9 @@ class StrategyRanker:
             ),
         ]
 
-        performance_report = (
-            self.performance_coach.analyze()
-        )
-
-        strategy_performance = (
-            performance_report.get(
-                "strategy_performance",
-                {},
-            )
-        )
-
         learned_rankings = [
             self._apply_historical_learning(
                 ranking=ranking,
-                strategy_performance=(
-                    strategy_performance
-                ),
             )
             for ranking in rankings
         ]
@@ -140,10 +127,6 @@ class StrategyRanker:
     def _apply_historical_learning(
         self,
         ranking: Dict[str, Any],
-        strategy_performance: Dict[
-            str,
-            Dict[str, Any],
-        ],
     ) -> Dict[str, Any]:
         strategy = str(
             ranking.get(
@@ -167,98 +150,30 @@ class StrategyRanker:
             )
         )
 
-        stats = strategy_performance.get(
-            strategy,
-            {},
+        learning_result = (
+            self.learning_engine
+            .get_strategy_adjustment(
+                strategy=strategy,
+            )
         )
 
-        trades = int(
-            stats.get(
-                "trades",
+        adjustment = int(
+            learning_result.get(
+                "adjustment",
                 0,
             )
             or 0
         )
 
-        adjustment = 0
-
-        if trades < self.minimum_learning_sample:
-            reasons.append(
-                "Historical learning inactive: "
-                f"{trades}/"
-                f"{self.minimum_learning_sample} "
-                "required trades."
+        reason = str(
+            learning_result.get(
+                "reason",
+                "",
             )
+        )
 
-        else:
-            win_rate = float(
-                stats.get(
-                    "win_rate",
-                    0.0,
-                )
-                or 0.0
-            )
-
-            profit_factor_raw = stats.get(
-                "profit_factor",
-                0.0,
-            )
-
-            if profit_factor_raw == "Infinity":
-                profit_factor = 3.0
-
-            else:
-                try:
-                    profit_factor = float(
-                        profit_factor_raw
-                    )
-
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    profit_factor = 0.0
-
-            if win_rate >= 60:
-                adjustment += 6
-
-            elif win_rate >= 55:
-                adjustment += 3
-
-            elif win_rate < 40:
-                adjustment -= 6
-
-            elif win_rate < 45:
-                adjustment -= 3
-
-            if profit_factor >= 1.5:
-                adjustment += 4
-
-            elif profit_factor >= 1.2:
-                adjustment += 2
-
-            elif profit_factor < 0.8:
-                adjustment -= 4
-
-            elif profit_factor < 1.0:
-                adjustment -= 2
-
-            adjustment = max(
-                -self.maximum_learning_adjustment,
-                min(
-                    adjustment,
-                    self.maximum_learning_adjustment,
-                ),
-            )
-
-            reasons.append(
-                "Historical adjustment: "
-                f"{adjustment:+d} from "
-                f"{trades} trades, "
-                f"{win_rate:.1f}% win rate, "
-                f"{profit_factor:.2f} "
-                "profit factor."
-            )
+        if reason:
+            reasons.append(reason)
 
         final_score = max(
             0,
@@ -271,11 +186,21 @@ class StrategyRanker:
         return {
             **ranking,
             "base_score": base_score,
-            "historical_adjustment": adjustment,
-            "historical_sample_size": trades,
-            "learning_active": (
-                trades
-                >= self.minimum_learning_sample
+            "historical_adjustment": (
+                adjustment
+            ),
+            "historical_sample_size": int(
+                learning_result.get(
+                    "sample_size",
+                    0,
+                )
+                or 0
+            ),
+            "learning_active": bool(
+                learning_result.get(
+                    "active",
+                    False,
+                )
             ),
             "score": final_score,
             "reasons": reasons,
