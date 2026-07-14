@@ -7,12 +7,15 @@ class TradeLifecycle:
     """
     Manages the complete lifecycle of every trade.
 
-    Version 6 supports:
+    Version 8 supports:
     - Opening trades
     - Preventing duplicate trades
     - Updating live prices
     - Calculating unrealized P&L
     - Tracking highest and lowest prices
+    - Tracking trade duration and last new high
+    - No-momentum exit after a configurable wait
+    - Maximum holding-time exit
     - Moving stop loss to breakeven at 1R
     - Configurable multi-level profit booking
     - Multiple profit targets in one price update
@@ -20,7 +23,7 @@ class TradeLifecycle:
     - Risk-based trailing fallback when ATR is unavailable
     - Tracking partial realized P&L
     - Detecting stop-loss, breakeven, trailing,
-      and target exits
+      target, and time-based exits
     - Closing trades
     """
 
@@ -147,6 +150,8 @@ class TradeLifecycle:
         if atr_multiplier <= 0:
             atr_multiplier = 2.0
 
+        now = datetime.now()
+
         trade = {
             "symbol": normalized_symbol,
             "strategy": str(
@@ -219,7 +224,11 @@ class TradeLifecycle:
             ],
             "completed_profit_targets": 0,
             "partial_realized_pnl": 0.0,
-            "entry_time": datetime.now(),
+            "entry_time": now,
+            "last_new_high_time": now,
+            "minutes_open": 0.0,
+            "max_hold_minutes": 90,
+            "max_wait_for_1r": 15,
             "exit_time": None,
             "exit_price": None,
             "exit_reason": None,
@@ -301,12 +310,27 @@ class TradeLifecycle:
             current_price
         )
 
-        trade["highest_price"] = max(
-            float(
-                trade["highest_price"]
-            ),
-            current_price,
+        now = datetime.now()
+
+        minutes_open = (
+            now
+            - trade["entry_time"]
+        ).total_seconds() / 60.0
+
+        trade["minutes_open"] = float(
+            minutes_open
         )
+
+        if current_price > float(
+            trade["highest_price"]
+        ):
+            trade["highest_price"] = (
+                current_price
+            )
+
+            trade[
+                "last_new_high_time"
+            ] = now
 
         trade["lowest_price"] = min(
             float(
@@ -324,55 +348,137 @@ class TradeLifecycle:
             unrealized_pnl
         )
 
-        trailing_result = (
-            self.update_trailing_stop(
-                symbol=normalized_symbol,
-                current_price=current_price,
+        risk_per_share = float(
+            trade["risk_per_share"]
+        )
+
+        current_r_multiple = (
+            (
+                current_price
+                - entry_price
             )
-        )
-
-        partial_exits = (
-            self.check_profit_targets(
-                symbol=normalized_symbol,
-                current_price=current_price,
-            )
-        )
-
-        remaining_quantity = int(
-            trade["remaining_quantity"]
-        )
-
-        unrealized_pnl = (
-            current_price
-            - entry_price
-        ) * remaining_quantity
-
-        trade["unrealized_pnl"] = float(
-            unrealized_pnl
+            / risk_per_share
+            if risk_per_share > 0
+            else 0.0
         )
 
         exit_signal = None
 
-        if current_price <= float(
-            trade["stop_loss"]
+        trailing_result = {
+            "updated": True,
+            "current_r_multiple": round(
+                current_r_multiple,
+                4,
+            ),
+            "breakeven_activated_now": False,
+            "trailing_updated": False,
+        }
+
+        partial_exits = {
+            "execute": False,
+            "orders": [],
+            "completed_targets": int(
+                trade[
+                    "completed_profit_targets"
+                ]
+            ),
+            "remaining_quantity": int(
+                trade[
+                    "remaining_quantity"
+                ]
+            ),
+        }
+
+        # -------------------------
+        # Maximum holding time
+        # -------------------------
+
+        if float(
+            trade["minutes_open"]
+        ) >= float(
+            trade["max_hold_minutes"]
         ):
-            if bool(
-                trade["trailing_active"]
-            ):
-                exit_signal = "TRAILING_STOP"
+            exit_signal = (
+                "MAX_HOLD_TIME"
+            )
 
-            elif bool(
-                trade["breakeven_activated"]
-            ):
-                exit_signal = "BREAKEVEN_STOP"
+        # -------------------------
+        # No-momentum time exit
+        # -------------------------
 
-            else:
-                exit_signal = "STOP_LOSS"
-
-        elif current_price >= float(
-            trade["target"]
+        elif (
+            float(
+                trade["minutes_open"]
+            )
+            >= float(
+                trade["max_wait_for_1r"]
+            )
+            and current_r_multiple < 1.0
         ):
-            exit_signal = "TARGET"
+            exit_signal = (
+                "TIME_EXIT_NO_MOMENTUM"
+            )
+
+        else:
+            trailing_result = (
+                self.update_trailing_stop(
+                    symbol=normalized_symbol,
+                    current_price=current_price,
+                )
+            )
+
+            partial_exits = (
+                self.check_profit_targets(
+                    symbol=normalized_symbol,
+                    current_price=current_price,
+                )
+            )
+
+            remaining_quantity = int(
+                trade[
+                    "remaining_quantity"
+                ]
+            )
+
+            unrealized_pnl = (
+                current_price
+                - entry_price
+            ) * remaining_quantity
+
+            trade["unrealized_pnl"] = float(
+                unrealized_pnl
+            )
+
+            if current_price <= float(
+                trade["stop_loss"]
+            ):
+                if bool(
+                    trade[
+                        "trailing_active"
+                    ]
+                ):
+                    exit_signal = (
+                        "TRAILING_STOP"
+                    )
+
+                elif bool(
+                    trade[
+                        "breakeven_activated"
+                    ]
+                ):
+                    exit_signal = (
+                        "BREAKEVEN_STOP"
+                    )
+
+                else:
+                    exit_signal = (
+                        "STOP_LOSS"
+                    )
+
+            elif current_price >= float(
+                trade["target"]
+            ):
+                exit_signal = "TARGET"
 
         return {
             "updated": True,
@@ -387,6 +493,27 @@ class TradeLifecycle:
             ),
             "lowest_price": float(
                 trade["lowest_price"]
+            ),
+            "minutes_open": round(
+                float(
+                    trade["minutes_open"]
+                ),
+                2,
+            ),
+            "last_new_high_time": (
+                trade[
+                    "last_new_high_time"
+                ]
+            ),
+            "max_hold_minutes": int(
+                trade[
+                    "max_hold_minutes"
+                ]
+            ),
+            "max_wait_for_1r": int(
+                trade[
+                    "max_wait_for_1r"
+                ]
             ),
             "stop_loss": float(
                 trade["stop_loss"]
