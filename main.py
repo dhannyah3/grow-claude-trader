@@ -20,6 +20,7 @@ from core.market_clock import (
 )
 from core.paper_trader import PaperTrader
 from core.risk_manager import RiskManager
+from core.trade_lifecycle import TradeLifecycle
 from data.market_data import MarketData
 from intelligence.market_brain import MarketBrain
 from intelligence.market_intelligence import MarketIntelligence
@@ -553,6 +554,7 @@ def open_paper_trades(
     scan_results: List[Dict[str, Any]],
     market: MarketData,
     trader: PaperTrader,
+    lifecycle: TradeLifecycle,
     risk_manager: RiskManager,
     claude: ClaudeAnalyzer,
     performance_coach: PerformanceCoach,
@@ -992,6 +994,48 @@ def open_paper_trades(
             )
             continue
 
+        lifecycle_opened = (
+            lifecycle.open_trade(
+                symbol=symbol,
+                strategy=selected_strategy,
+                quantity=quantity,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                target=target_price,
+                metadata={
+                    "market_condition": (
+                        market_condition
+                    ),
+                    "market_regime": regime_data,
+                    "market_intelligence": (
+                        intelligence
+                    ),
+                    "market_brain": brain_decision,
+                    "claude_review": {
+                        "approved": approved,
+                        "confidence": confidence,
+                        "reason": claude_reason,
+                    },
+                },
+            )
+        )
+
+        if not lifecycle_opened:
+            print(
+                f"{symbol}: lifecycle mirror failed. "
+                "Closing paper trade to keep "
+                "state consistent."
+            )
+
+            trader.close_trade(
+                symbol=symbol,
+                exit_price=entry_price,
+                exit_reason=(
+                    "LIFECYCLE_SYNC_FAILED"
+                ),
+            )
+            continue
+
         adjusted_risk = (
             float(
                 plan.get(
@@ -1025,6 +1069,7 @@ def open_paper_trades(
 def monitor_positions(
     market: MarketData,
     trader: PaperTrader,
+    lifecycle: TradeLifecycle,
 ) -> None:
     symbols = list(
         trader.open_positions.keys()
@@ -1050,21 +1095,22 @@ def monitor_positions(
             quote["last_price"]
         )
 
-        position = trader.get_open_position(
-            symbol
+        lifecycle_update = (
+            lifecycle.update_price(
+                symbol=symbol,
+                current_price=current_price,
+            )
         )
 
-        if position is not None:
-            unrealized_pnl = (
-                current_price
-                - position["entry_price"]
-            ) * position["quantity"]
-
+        if lifecycle_update.get(
+            "updated",
+            False,
+        ):
             print(
                 f"{symbol} | "
                 f"Current: ₹{current_price:.2f} | "
-                f"Unrealized P&L: "
-                f"₹{unrealized_pnl:.2f}"
+                f"Unrealized P&L: ₹"
+                f"{lifecycle_update.get('unrealized_pnl', 0.0):.2f}"
             )
 
         trader.check_exit(
@@ -1072,10 +1118,31 @@ def monitor_positions(
             current_price=current_price,
         )
 
+        if (
+            trader.get_open_position(symbol)
+            is None
+            and lifecycle.has_open_trade(
+                symbol
+            )
+        ):
+            exit_signal = (
+                lifecycle_update.get(
+                    "exit_signal"
+                )
+                or "PAPER_TRADER_EXIT"
+            )
+
+            lifecycle.close_trade(
+                symbol=symbol,
+                exit_price=current_price,
+                exit_reason=exit_signal,
+            )
+
 
 def close_all_positions(
     market: MarketData,
     trader: PaperTrader,
+    lifecycle: TradeLifecycle,
     reason: str,
 ) -> None:
     symbols = list(
@@ -1098,13 +1165,27 @@ def close_all_positions(
             )
             continue
 
-        trader.close_trade(
+        exit_price = float(
+            quote["last_price"]
+        )
+
+        closed_trade = trader.close_trade(
             symbol=symbol,
-            exit_price=float(
-                quote["last_price"]
-            ),
+            exit_price=exit_price,
             exit_reason=reason,
         )
+
+        if (
+            closed_trade is not None
+            and lifecycle.has_open_trade(
+                symbol
+            )
+        ):
+            lifecycle.close_trade(
+                symbol=symbol,
+                exit_price=exit_price,
+                exit_reason=reason,
+            )
 
 
 def build_watchlist_display(
@@ -1236,6 +1317,39 @@ def main() -> None:
         log_file="logs/paper_trades.csv",
     )
 
+    lifecycle = TradeLifecycle()
+
+    for symbol, position in (
+        trader.open_positions.items()
+    ):
+        metadata = position.get(
+            "metadata",
+            {},
+        )
+
+        lifecycle.open_trade(
+            symbol=symbol,
+            strategy=str(
+                metadata.get(
+                    "strategy",
+                    "UNKNOWN",
+                )
+            ),
+            quantity=int(
+                position["quantity"]
+            ),
+            entry_price=float(
+                position["entry_price"]
+            ),
+            stop_loss=float(
+                position["stop_loss"]
+            ),
+            target=float(
+                position["target"]
+            ),
+            metadata=metadata,
+        )
+
     risk_manager = RiskManager(
         account_balance=(
             trader.starting_balance
@@ -1280,6 +1394,7 @@ def main() -> None:
             close_all_positions(
                 market=market,
                 trader=trader,
+                lifecycle=lifecycle,
                 reason="DAY_END_EXIT",
             )
 
@@ -1292,6 +1407,7 @@ def main() -> None:
         monitor_positions(
             market=market,
             trader=trader,
+            lifecycle=lifecycle,
         )
 
         current_timestamp = time.time()
@@ -1325,6 +1441,7 @@ def main() -> None:
                 scan_results=latest_scan,
                 market=market,
                 trader=trader,
+                lifecycle=lifecycle,
                 risk_manager=risk_manager,
                 claude=claude,
                 performance_coach=(
