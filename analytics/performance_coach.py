@@ -51,6 +51,10 @@ class PerformanceCoach:
                 "strategy_performance": {},
                 "confidence_performance": {},
                 "market_condition_performance": {},
+                "volatility_performance": {},
+                "gap_performance": {},
+                "market_quality_performance": {},
+                "brain_confidence_performance": {},
                 "best_strategy": None,
                 "worst_strategy": None,
                 "recommendations": [
@@ -58,47 +62,31 @@ class PerformanceCoach:
                 ],
             }
 
-        strategy_stats: Dict[str, Dict[str, float]] = (
-            defaultdict(
-                lambda: {
-                    "trades": 0,
-                    "wins": 0,
-                    "losses": 0,
-                    "total_pnl": 0.0,
-                }
-            )
-        )
-
-        confidence_stats: Dict[str, Dict[str, float]] = (
-            defaultdict(
-                lambda: {
-                    "trades": 0,
-                    "wins": 0,
-                    "losses": 0,
-                    "total_pnl": 0.0,
-                }
-            )
-        )
-
-        market_stats: Dict[str, Dict[str, float]] = (
-            defaultdict(
-                lambda: {
-                    "trades": 0,
-                    "wins": 0,
-                    "losses": 0,
-                    "total_pnl": 0.0,
-                }
-            )
+        strategy_stats = self._create_stats_group()
+        confidence_stats = self._create_stats_group()
+        market_stats = self._create_stats_group()
+        volatility_stats = self._create_stats_group()
+        gap_stats = self._create_stats_group()
+        market_quality_stats = self._create_stats_group()
+        brain_confidence_stats = (
+            self._create_stats_group()
         )
 
         for entry in entries:
             pnl = float(
-                entry.get("pnl", 0.0)
+                entry.get(
+                    "pnl",
+                    0.0,
+                )
+                or 0.0
             )
 
             result = str(
-                entry.get("result", "")
-            )
+                entry.get(
+                    "result",
+                    "",
+                )
+            ).upper()
 
             strategy = str(
                 entry.get(
@@ -112,18 +100,50 @@ class PerformanceCoach:
                     "market_condition",
                     "UNKNOWN",
                 )
-            )
+            ).upper()
 
             claude_data = entry.get(
                 "claude",
                 {},
             )
 
+            if not isinstance(
+                claude_data,
+                dict,
+            ):
+                claude_data = {}
+
+            market_regime = entry.get(
+                "market_regime",
+                {},
+            )
+
+            if not isinstance(
+                market_regime,
+                dict,
+            ):
+                market_regime = {}
+
+            volatility = str(
+                market_regime.get(
+                    "volatility",
+                    "UNKNOWN",
+                )
+            ).upper()
+
+            gap = str(
+                market_regime.get(
+                    "gap",
+                    "UNKNOWN",
+                )
+            ).upper()
+
             confidence = int(
                 claude_data.get(
                     "confidence",
                     0,
                 )
+                or 0
             )
 
             confidence_bucket = (
@@ -133,6 +153,44 @@ class PerformanceCoach:
                 if confidence >= 80
                 else "70-79"
                 if confidence >= 70
+                else "Below 70"
+            )
+
+            market_quality = int(
+                entry.get(
+                    "market_quality",
+                    0,
+                )
+                or 0
+            )
+
+            if market_quality >= 80:
+                quality_bucket = "80-100"
+
+            elif market_quality >= 60:
+                quality_bucket = "60-79"
+
+            elif market_quality >= 40:
+                quality_bucket = "40-59"
+
+            else:
+                quality_bucket = "0-39"
+
+            brain_confidence = int(
+                entry.get(
+                    "brain_confidence",
+                    0,
+                )
+                or 0
+            )
+
+            brain_bucket = (
+                "90-100"
+                if brain_confidence >= 90
+                else "80-89"
+                if brain_confidence >= 80
+                else "70-79"
+                if brain_confidence >= 70
                 else "Below 70"
             )
 
@@ -158,6 +216,38 @@ class PerformanceCoach:
                 pnl,
             )
 
+            self._update_group(
+                volatility_stats[
+                    volatility
+                ],
+                result,
+                pnl,
+            )
+
+            self._update_group(
+                gap_stats[
+                    gap
+                ],
+                result,
+                pnl,
+            )
+
+            self._update_group(
+                market_quality_stats[
+                    quality_bucket
+                ],
+                result,
+                pnl,
+            )
+
+            self._update_group(
+                brain_confidence_stats[
+                    brain_bucket
+                ],
+                result,
+                pnl,
+            )
+
         strategy_performance = (
             self._finalize_groups(
                 strategy_stats
@@ -173,6 +263,30 @@ class PerformanceCoach:
         market_condition_performance = (
             self._finalize_groups(
                 market_stats
+            )
+        )
+
+        volatility_performance = (
+            self._finalize_groups(
+                volatility_stats
+            )
+        )
+
+        gap_performance = (
+            self._finalize_groups(
+                gap_stats
+            )
+        )
+
+        market_quality_performance = (
+            self._finalize_groups(
+                market_quality_stats
+            )
+        )
+
+        brain_confidence_performance = (
+            self._finalize_groups(
+                brain_confidence_stats
             )
         )
 
@@ -203,10 +317,36 @@ class PerformanceCoach:
             "market_condition_performance": (
                 market_condition_performance
             ),
+            "volatility_performance": (
+                volatility_performance
+            ),
+            "gap_performance": (
+                gap_performance
+            ),
+            "market_quality_performance": (
+                market_quality_performance
+            ),
+            "brain_confidence_performance": (
+                brain_confidence_performance
+            ),
             "best_strategy": best_strategy,
             "worst_strategy": worst_strategy,
             "recommendations": recommendations,
         }
+
+    @staticmethod
+    def _create_stats_group():
+        return defaultdict(
+            lambda: {
+                "trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "breakeven": 0,
+                "total_pnl": 0.0,
+                "gross_profit": 0.0,
+                "gross_loss": 0.0,
+            }
+        )
 
     @staticmethod
     def _update_group(
@@ -219,8 +359,16 @@ class PerformanceCoach:
 
         if result == "WIN":
             group["wins"] += 1
+            group["gross_profit"] += pnl
+
         elif result == "LOSS":
             group["losses"] += 1
+            group["gross_loss"] += abs(
+                pnl
+            )
+
+        else:
+            group["breakeven"] += 1
 
     @staticmethod
     def _finalize_groups(
@@ -228,18 +376,39 @@ class PerformanceCoach:
             str,
             Dict[str, float],
         ],
-    ) -> Dict[str, Dict[str, float]]:
+    ) -> Dict[str, Dict[str, Any]]:
         finalized: Dict[
             str,
-            Dict[str, float],
+            Dict[str, Any],
         ] = {}
 
         for name, stats in groups.items():
-            trades = int(stats["trades"])
-            wins = int(stats["wins"])
-            losses = int(stats["losses"])
+            trades = int(
+                stats["trades"]
+            )
+
+            wins = int(
+                stats["wins"]
+            )
+
+            losses = int(
+                stats["losses"]
+            )
+
+            breakeven = int(
+                stats["breakeven"]
+            )
+
             total_pnl = float(
                 stats["total_pnl"]
+            )
+
+            gross_profit = float(
+                stats["gross_profit"]
+            )
+
+            gross_loss = float(
+                stats["gross_loss"]
             )
 
             win_rate = (
@@ -254,10 +423,37 @@ class PerformanceCoach:
                 else 0.0
             )
 
+            average_win = (
+                gross_profit / wins
+                if wins > 0
+                else 0.0
+            )
+
+            average_loss = (
+                gross_loss / losses
+                if losses > 0
+                else 0.0
+            )
+
+            if gross_loss > 0:
+                profit_factor = (
+                    gross_profit
+                    / gross_loss
+                )
+
+            elif gross_profit > 0:
+                profit_factor = float(
+                    "inf"
+                )
+
+            else:
+                profit_factor = 0.0
+
             finalized[name] = {
                 "trades": trades,
                 "wins": wins,
                 "losses": losses,
+                "breakeven": breakeven,
                 "win_rate": round(
                     win_rate,
                     2,
@@ -266,7 +462,36 @@ class PerformanceCoach:
                     total_pnl,
                     2,
                 ),
+                "gross_profit": round(
+                    gross_profit,
+                    2,
+                ),
+                "gross_loss": round(
+                    gross_loss,
+                    2,
+                ),
                 "average_pnl": round(
+                    average_pnl,
+                    2,
+                ),
+                "average_win": round(
+                    average_win,
+                    2,
+                ),
+                "average_loss": round(
+                    average_loss,
+                    2,
+                ),
+                "profit_factor": (
+                    round(
+                        profit_factor,
+                        2,
+                    )
+                    if profit_factor
+                    != float("inf")
+                    else "Infinity"
+                ),
+                "expectancy": round(
                     average_pnl,
                     2,
                 ),
@@ -278,7 +503,7 @@ class PerformanceCoach:
     def _best_group(
         groups: Dict[
             str,
-            Dict[str, float],
+            Dict[str, Any],
         ],
     ) -> str:
         if not groups:
@@ -295,7 +520,7 @@ class PerformanceCoach:
     def _worst_group(
         groups: Dict[
             str,
-            Dict[str, float],
+            Dict[str, Any],
         ],
     ) -> str:
         if not groups:
@@ -316,15 +541,12 @@ class PerformanceCoach:
     ):
         recommendations = []
 
-        # -------------------------
-        # Best Strategy
-        # -------------------------
-
         if strategy_performance:
-
             best = max(
                 strategy_performance.items(),
-                key=lambda x: x[1]["win_rate"],
+                key=lambda item: item[1][
+                    "win_rate"
+                ],
             )
 
             recommendations.append(
@@ -334,7 +556,9 @@ class PerformanceCoach:
 
             worst = min(
                 strategy_performance.items(),
-                key=lambda x: x[1]["win_rate"],
+                key=lambda item: item[1][
+                    "win_rate"
+                ],
             )
 
             if worst[1]["trades"] >= 3:
@@ -343,36 +567,30 @@ class PerformanceCoach:
                     f"({worst[1]['win_rate']}% win rate)."
                 )
 
-        # -------------------------
-        # Confidence
-        # -------------------------
-
         if confidence_performance:
-
             best_bucket = max(
                 confidence_performance.items(),
-                key=lambda x: x[1]["win_rate"],
+                key=lambda item: item[1][
+                    "win_rate"
+                ],
             )
 
             recommendations.append(
-                f"Highest-performing confidence range: "
-                f"{best_bucket[0]} "
+                "Highest-performing confidence "
+                f"range: {best_bucket[0]} "
                 f"({best_bucket[1]['win_rate']}%)."
             )
 
-        # -------------------------
-        # Market Condition
-        # -------------------------
-
         if market_condition_performance:
-
             best_market = max(
                 market_condition_performance.items(),
-                key=lambda x: x[1]["win_rate"],
+                key=lambda item: item[1][
+                    "win_rate"
+                ],
             )
 
             recommendations.append(
-                f"Best market condition: "
+                "Best market condition: "
                 f"{best_market[0]}."
             )
 
@@ -389,7 +607,9 @@ if __name__ == "__main__":
 
     report = coach.analyze()
 
-    print("\n===== AI PERFORMANCE COACH =====\n")
+    print(
+        "\n===== AI PERFORMANCE COACH =====\n"
+    )
 
     print(
         f"Total Trades: "
@@ -423,9 +643,39 @@ if __name__ == "__main__":
         ]
     )
 
+    print("\nVolatility Performance:")
+    print(
+        report[
+            "volatility_performance"
+        ]
+    )
+
+    print("\nGap Performance:")
+    print(
+        report[
+            "gap_performance"
+        ]
+    )
+
+    print("\nMarket Quality Performance:")
+    print(
+        report[
+            "market_quality_performance"
+        ]
+    )
+
+    print("\nMarketBrain Confidence Performance:")
+    print(
+        report[
+            "brain_confidence_performance"
+        ]
+    )
+
     print("\nRecommendations:")
 
     for recommendation in report[
         "recommendations"
     ]:
-        print(f"- {recommendation}")
+        print(
+            f"- {recommendation}"
+        )
