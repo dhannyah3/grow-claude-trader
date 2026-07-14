@@ -10,8 +10,10 @@ class LearningEngine:
 
     Learning priority:
     1. Strategy + market regime
-    2. Overall strategy performance
-    3. No adjustment
+    2. Strategy + volatility
+    3. Strategy + gap type
+    4. Overall strategy performance
+    5. No adjustment
     """
 
     def __init__(
@@ -36,6 +38,8 @@ class LearningEngine:
         self,
         strategy: str,
         regime: Optional[str] = None,
+        volatility: Optional[str] = None,
+        gap: Optional[str] = None,
     ) -> Dict[str, Any]:
         report = self.performance_coach.analyze()
 
@@ -49,6 +53,16 @@ class LearningEngine:
             {},
         )
 
+        strategy_volatility_performance = report.get(
+            "strategy_volatility_performance",
+            {},
+        )
+
+        strategy_gap_performance = report.get(
+            "strategy_gap_performance",
+            {},
+        )
+
         normalized_strategy = str(
             strategy
         ).upper()
@@ -57,9 +71,27 @@ class LearningEngine:
             regime or "UNKNOWN"
         ).upper()
 
+        normalized_volatility = str(
+            volatility or "UNKNOWN"
+        ).upper()
+
+        normalized_gap = str(
+            gap or "UNKNOWN"
+        ).upper()
+
         regime_key = (
             f"{normalized_strategy}|"
             f"{normalized_regime}"
+        )
+
+        volatility_key = (
+            f"{normalized_strategy}|"
+            f"{normalized_volatility}"
+        )
+
+        gap_key = (
+            f"{normalized_strategy}|"
+            f"{normalized_gap}"
         )
 
         regime_stats = (
@@ -69,50 +101,109 @@ class LearningEngine:
             )
         )
 
-        regime_trades = int(
-            regime_stats.get(
-                "trades",
-                0,
+        volatility_stats = (
+            strategy_volatility_performance.get(
+                volatility_key,
+                {},
             )
-            or 0
         )
 
-        if regime_trades >= self.minimum_sample_size:
-            return self._build_adjustment_result(
-                stats=regime_stats,
-                source="STRATEGY_REGIME",
-                label=regime_key,
+        gap_stats = (
+            strategy_gap_performance.get(
+                gap_key,
+                {},
             )
+        )
 
         strategy_stats = strategy_performance.get(
             normalized_strategy,
             {},
         )
 
-        strategy_trades = int(
-            strategy_stats.get(
-                "trades",
-                0,
-            )
-            or 0
+        regime_trades = self._get_trades(
+            regime_stats
         )
 
-        if strategy_trades >= self.minimum_sample_size:
+        volatility_trades = self._get_trades(
+            volatility_stats
+        )
+
+        gap_trades = self._get_trades(
+            gap_stats
+        )
+
+        strategy_trades = self._get_trades(
+            strategy_stats
+        )
+
+        candidates = [
+            (
+                "STRATEGY_REGIME",
+                regime_key,
+                regime_stats,
+                regime_trades,
+            ),
+            (
+                "STRATEGY_VOLATILITY",
+                volatility_key,
+                volatility_stats,
+                volatility_trades,
+            ),
+            (
+                "STRATEGY_GAP",
+                gap_key,
+                gap_stats,
+                gap_trades,
+            ),
+            (
+                "OVERALL_STRATEGY",
+                normalized_strategy,
+                strategy_stats,
+                strategy_trades,
+            ),
+        ]
+
+        for index, (
+            source,
+            label,
+            stats,
+            trades,
+        ) in enumerate(candidates):
+            if trades < self.minimum_sample_size:
+                continue
+
             result = self._build_adjustment_result(
-                stats=strategy_stats,
-                source="OVERALL_STRATEGY",
-                label=normalized_strategy,
+                stats=stats,
+                source=source,
+                label=label,
             )
 
-            result["fallback_used"] = True
+            result["fallback_used"] = (
+                index > 0
+            )
+
             result["regime_sample_size"] = (
                 regime_trades
             )
-            result["reason"] = (
-                f"Regime sample {regime_trades}/"
-                f"{self.minimum_sample_size} was too small. "
-                f"{result['reason']}"
+
+            result["volatility_sample_size"] = (
+                volatility_trades
             )
+
+            result["gap_sample_size"] = (
+                gap_trades
+            )
+
+            result["strategy_sample_size"] = (
+                strategy_trades
+            )
+
+            if index > 0:
+                result["reason"] = (
+                    "Higher-priority context samples "
+                    "were too small. "
+                    f"{result['reason']}"
+                )
 
             return result
 
@@ -122,21 +213,45 @@ class LearningEngine:
             "source": "NONE",
             "sample_size": max(
                 regime_trades,
+                volatility_trades,
+                gap_trades,
                 strategy_trades,
             ),
             "regime_sample_size": regime_trades,
-            "strategy_sample_size": strategy_trades,
+            "volatility_sample_size": (
+                volatility_trades
+            ),
+            "gap_sample_size": gap_trades,
+            "strategy_sample_size": (
+                strategy_trades
+            ),
             "win_rate": 0.0,
             "profit_factor": 0.0,
             "fallback_used": False,
             "reason": (
                 "Historical learning inactive. "
-                f"Regime sample: {regime_trades}/"
+                f"Regime: {regime_trades}/"
                 f"{self.minimum_sample_size}; "
-                f"strategy sample: {strategy_trades}/"
+                f"volatility: {volatility_trades}/"
+                f"{self.minimum_sample_size}; "
+                f"gap: {gap_trades}/"
+                f"{self.minimum_sample_size}; "
+                f"strategy: {strategy_trades}/"
                 f"{self.minimum_sample_size}."
             ),
         }
+
+    @staticmethod
+    def _get_trades(
+        stats: Dict[str, Any],
+    ) -> int:
+        return int(
+            stats.get(
+                "trades",
+                0,
+            )
+            or 0
+        )
 
     def _build_adjustment_result(
         self,
@@ -144,12 +259,8 @@ class LearningEngine:
         source: str,
         label: str,
     ) -> Dict[str, Any]:
-        trades = int(
-            stats.get(
-                "trades",
-                0,
-            )
-            or 0
+        trades = self._get_trades(
+            stats
         )
 
         win_rate = float(
@@ -262,6 +373,8 @@ if __name__ == "__main__":
         engine.get_strategy_adjustment(
             strategy="ORB_BREAKOUT",
             regime="TRENDING",
+            volatility="MEDIUM",
+            gap="NO_GAP",
         )
     )
 
@@ -269,5 +382,7 @@ if __name__ == "__main__":
         engine.get_strategy_adjustment(
             strategy="VWAP_PULLBACK",
             regime="RANGE_BOUND",
+            volatility="LOW",
+            gap="NO_GAP",
         )
     )

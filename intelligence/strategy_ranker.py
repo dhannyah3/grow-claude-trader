@@ -114,6 +114,8 @@ class StrategyRanker:
             self._apply_historical_learning(
                 ranking=ranking,
                 regime=trend,
+                volatility=volatility,
+                gap=gap,
             )
             for ranking in rankings
         ]
@@ -129,6 +131,8 @@ class StrategyRanker:
         self,
         ranking: Dict[str, Any],
         regime: str,
+        volatility: str,
+        gap: str,
     ) -> Dict[str, Any]:
         strategy = str(
             ranking.get(
@@ -157,6 +161,8 @@ class StrategyRanker:
             .get_strategy_adjustment(
                 strategy=strategy,
                 regime=regime,
+                volatility=volatility,
+                gap=gap,
             )
         )
 
