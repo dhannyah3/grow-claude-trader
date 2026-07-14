@@ -7,14 +7,16 @@ class TradeLifecycle:
     """
     Manages the complete lifecycle of every trade.
 
-    Version 3 supports:
+    Version 4 supports:
     - Opening trades
     - Preventing duplicate trades
     - Updating live prices
     - Calculating unrealized P&L
     - Tracking highest and lowest prices
     - Moving stop loss to breakeven at 1R
+    - Signaling a one-time 50% partial exit at 2R
     - Risk-based trailing stops from 2R onward
+    - Tracking partial realized P&L
     - Detecting stop-loss, breakeven, trailing,
       and target exits
     - Closing trades
@@ -99,6 +101,12 @@ class TradeLifecycle:
             "quantity": int(
                 quantity
             ),
+            "initial_quantity": int(
+                quantity
+            ),
+            "remaining_quantity": int(
+                quantity
+            ),
             "entry_price": entry_price,
             "current_price": entry_price,
             "stop_loss": stop_loss,
@@ -116,6 +124,13 @@ class TradeLifecycle:
             ),
             "breakeven_activated": False,
             "trailing_active": False,
+            "partial_exit_r": 2,
+            "partial_exit_fraction": 0.5,
+            "partial_exit_done": False,
+            "partial_exit_quantity": 0,
+            "partial_exit_price": None,
+            "partial_exit_time": None,
+            "partial_realized_pnl": 0.0,
             "entry_time": datetime.now(),
             "exit_time": None,
             "exit_price": None,
@@ -190,8 +205,8 @@ class TradeLifecycle:
             trade["entry_price"]
         )
 
-        quantity = int(
-            trade["quantity"]
+        remaining_quantity = int(
+            trade["remaining_quantity"]
         )
 
         trade["current_price"] = (
@@ -215,7 +230,7 @@ class TradeLifecycle:
         unrealized_pnl = (
             current_price
             - entry_price
-        ) * quantity
+        ) * remaining_quantity
 
         trade["unrealized_pnl"] = float(
             unrealized_pnl
@@ -226,6 +241,26 @@ class TradeLifecycle:
                 symbol=normalized_symbol,
                 current_price=current_price,
             )
+        )
+
+        partial_exit = (
+            self.check_partial_exit(
+                symbol=normalized_symbol,
+                current_price=current_price,
+            )
+        )
+
+        remaining_quantity = int(
+            trade["remaining_quantity"]
+        )
+
+        unrealized_pnl = (
+            current_price
+            - entry_price
+        ) * remaining_quantity
+
+        trade["unrealized_pnl"] = float(
+            unrealized_pnl
         )
 
         exit_signal = None
@@ -304,7 +339,192 @@ class TradeLifecycle:
                     0.0,
                 )
             ),
+            "initial_quantity": int(
+                trade["initial_quantity"]
+            ),
+            "remaining_quantity": int(
+                trade["remaining_quantity"]
+            ),
+            "partial_exit_done": bool(
+                trade["partial_exit_done"]
+            ),
+            "partial_realized_pnl": float(
+                trade["partial_realized_pnl"]
+            ),
+            "partial_exit": (
+                partial_exit
+            ),
             "exit_signal": exit_signal,
+        }
+
+    def check_partial_exit(
+        self,
+        symbol: str,
+        current_price: float,
+    ) -> Dict[str, Any]:
+        normalized_symbol = str(
+            symbol
+        ).strip().upper()
+
+        trade = self.active_trades.get(
+            normalized_symbol
+        )
+
+        if trade is None:
+            return {
+                "execute": False,
+                "reason": (
+                    f"{normalized_symbol}: no "
+                    "active lifecycle trade."
+                ),
+            }
+
+        if bool(
+            trade["partial_exit_done"]
+        ):
+            return {
+                "execute": False,
+                "reason": (
+                    "Partial exit already completed."
+                ),
+            }
+
+        risk_per_share = float(
+            trade["risk_per_share"]
+        )
+
+        entry_price = float(
+            trade["entry_price"]
+        )
+
+        partial_exit_r = int(
+            trade["partial_exit_r"]
+        )
+
+        trigger_price = (
+            entry_price
+            + (
+                partial_exit_r
+                * risk_per_share
+            )
+        )
+
+        if float(
+            current_price
+        ) < trigger_price:
+            return {
+                "execute": False,
+                "trigger_price": round(
+                    trigger_price,
+                    2,
+                ),
+            }
+
+        remaining_quantity = int(
+            trade["remaining_quantity"]
+        )
+
+        partial_quantity = max(
+            1,
+            int(
+                remaining_quantity
+                * float(
+                    trade[
+                        "partial_exit_fraction"
+                    ]
+                )
+            ),
+        )
+
+        if partial_quantity >= (
+            remaining_quantity
+        ):
+            return {
+                "execute": False,
+                "reason": (
+                    "Position is too small for "
+                    "a partial exit."
+                ),
+            }
+
+        partial_pnl = (
+            float(current_price)
+            - entry_price
+        ) * partial_quantity
+
+        trade[
+            "partial_exit_done"
+        ] = True
+
+        trade[
+            "partial_exit_quantity"
+        ] = partial_quantity
+
+        trade[
+            "partial_exit_price"
+        ] = float(
+            current_price
+        )
+
+        trade[
+            "partial_exit_time"
+        ] = datetime.now()
+
+        trade[
+            "partial_realized_pnl"
+        ] = float(
+            partial_pnl
+        )
+
+        trade[
+            "remaining_quantity"
+        ] = (
+            remaining_quantity
+            - partial_quantity
+        )
+
+        trade["quantity"] = int(
+            trade["remaining_quantity"]
+        )
+
+        trade["unrealized_pnl"] = (
+            float(current_price)
+            - entry_price
+        ) * int(
+            trade["remaining_quantity"]
+        )
+
+        print(
+            f"{normalized_symbol}: partial "
+            f"exit signal | Qty: "
+            f"{partial_quantity} | "
+            f"Remaining: "
+            f"{trade['remaining_quantity']} | "
+            f"Price: ₹{current_price:.2f}"
+        )
+
+        return {
+            "execute": True,
+            "symbol": normalized_symbol,
+            "quantity": (
+                partial_quantity
+            ),
+            "remaining_quantity": int(
+                trade[
+                    "remaining_quantity"
+                ]
+            ),
+            "exit_price": float(
+                current_price
+            ),
+            "partial_pnl": round(
+                partial_pnl,
+                2,
+            ),
+            "reason": (
+                f"PARTIAL_TARGET_"
+                f"{partial_exit_r}R"
+            ),
         }
 
     def update_trailing_stop(
@@ -482,14 +702,23 @@ class TradeLifecycle:
             trade["entry_price"]
         )
 
-        quantity = int(
-            trade["quantity"]
+        remaining_quantity = int(
+            trade["remaining_quantity"]
         )
 
-        realized_pnl = (
+        final_leg_pnl = (
             exit_price
             - entry_price
-        ) * quantity
+        ) * remaining_quantity
+
+        total_realized_pnl = (
+            float(
+                trade[
+                    "partial_realized_pnl"
+                ]
+            )
+            + final_leg_pnl
+        )
 
         trade["status"] = "COMPLETED"
         trade["exit_price"] = exit_price
@@ -498,7 +727,7 @@ class TradeLifecycle:
         )
         trade["exit_time"] = datetime.now()
         trade["realized_pnl"] = float(
-            realized_pnl
+            total_realized_pnl
         )
         trade["unrealized_pnl"] = 0.0
         trade["current_price"] = (
@@ -516,8 +745,11 @@ class TradeLifecycle:
         print(
             f"Lifecycle CLOSE: "
             f"{normalized_symbol} | "
+            f"Remaining Qty: "
+            f"{remaining_quantity} | "
             f"Exit: ₹{exit_price:.2f} | "
-            f"P&L: ₹{realized_pnl:.2f} | "
+            f"Total P&L: "
+            f"₹{total_realized_pnl:.2f} | "
             f"Reason: {exit_reason}"
         )
 

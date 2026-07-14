@@ -1102,44 +1102,128 @@ def monitor_positions(
             )
         )
 
-        if lifecycle_update.get(
+        if not lifecycle_update.get(
             "updated",
             False,
         ):
-            lifecycle_stop = float(
-                lifecycle_update.get(
-                    "stop_loss",
-                    0.0,
-                )
-                or 0.0
-            )
-
-            paper_position = (
-                trader.get_open_position(
-                    symbol
-                )
-            )
-
-            if (
-                paper_position is not None
-                and lifecycle_stop
-                > float(
-                    paper_position[
-                        "stop_loss"
-                    ]
-                )
-            ):
-                trader.update_stop_loss(
-                    symbol=symbol,
-                    stop_loss=lifecycle_stop,
-                )
-
             print(
-                f"{symbol} | "
-                f"Current: ₹{current_price:.2f} | "
-                f"Unrealized P&L: ₹"
-                f"{lifecycle_update.get('unrealized_pnl', 0.0):.2f}"
+                lifecycle_update.get(
+                    "reason",
+                    f"{symbol}: lifecycle "
+                    "update failed.",
+                )
             )
+            continue
+
+        # -------------------------
+        # Synchronize stop loss
+        # -------------------------
+
+        lifecycle_stop = float(
+            lifecycle_update.get(
+                "stop_loss",
+                0.0,
+            )
+            or 0.0
+        )
+
+        paper_position = (
+            trader.get_open_position(
+                symbol
+            )
+        )
+
+        if (
+            paper_position is not None
+            and lifecycle_stop
+            > float(
+                paper_position[
+                    "stop_loss"
+                ]
+            )
+        ):
+            trader.update_stop_loss(
+                symbol=symbol,
+                stop_loss=lifecycle_stop,
+            )
+
+        # -------------------------
+        # Execute partial exit
+        # -------------------------
+
+        partial_exit = (
+            lifecycle_update.get(
+                "partial_exit",
+                {},
+            )
+        )
+
+        if (
+            isinstance(
+                partial_exit,
+                dict,
+            )
+            and partial_exit.get(
+                "execute",
+                False,
+            )
+        ):
+            partial_result = (
+                trader.partial_close_trade(
+                    symbol=symbol,
+                    exit_price=float(
+                        partial_exit.get(
+                            "exit_price",
+                            current_price,
+                        )
+                    ),
+                    quantity=int(
+                        partial_exit.get(
+                            "quantity",
+                            0,
+                        )
+                    ),
+                    exit_reason=str(
+                        partial_exit.get(
+                            "reason",
+                            "PARTIAL_TARGET",
+                        )
+                    ),
+                )
+            )
+
+            if partial_result is None:
+                print(
+                    f"{symbol}: partial exit "
+                    "execution failed."
+                )
+
+            else:
+                print(
+                    f"{symbol}: partial profit "
+                    f"booked | Qty: "
+                    f"{partial_result['quantity']} | "
+                    f"Remaining: "
+                    f"{partial_result['remaining_quantity']} | "
+                    f"Partial P&L: ₹"
+                    f"{partial_result['partial_pnl']:.2f}"
+                )
+
+        print(
+            f"{symbol} | "
+            f"Current: ₹{current_price:.2f} | "
+            f"Remaining Qty: "
+            f"{lifecycle_update.get('remaining_quantity', 0)} | "
+            f"Unrealized P&L: ₹"
+            f"{lifecycle_update.get('unrealized_pnl', 0.0):.2f} | "
+            f"Partial P&L: ₹"
+            f"{lifecycle_update.get('partial_realized_pnl', 0.0):.2f} | "
+            f"Stop: ₹{lifecycle_stop:.2f}"
+        )
+
+        # -------------------------
+        # Check complete exit
+        # -------------------------
 
         trader.check_exit(
             symbol=symbol,
@@ -1147,7 +1231,9 @@ def monitor_positions(
         )
 
         if (
-            trader.get_open_position(symbol)
+            trader.get_open_position(
+                symbol
+            )
             is None
             and lifecycle.has_open_trade(
                 symbol
@@ -1165,7 +1251,7 @@ def monitor_positions(
                 exit_price=current_price,
                 exit_reason=exit_signal,
             )
-
+            
 
 def close_all_positions(
     market: MarketData,
