@@ -1,7 +1,7 @@
 """
 Recommendation Engine
 
-Version 6.3.4
+Version 6.3.5
 
 Uses MarketLearning statistics to score,
 rank, and evaluate trading strategies.
@@ -180,8 +180,22 @@ class RecommendationEngine:
                 ),
                 "decision_confidence": 0.0,
                 "risk_level": "VERY_HIGH",
-                "reasons": reasons,
                 "best_strategy": None,
+                "selected_strategy": None,
+                "strategy_rank": 0,
+                "strategy_score": 0.0,
+                "expected_win_rate": 0.0,
+                "expected_expectancy": 0.0,
+                "expected_average_r": 0.0,
+                "expected_hold_minutes": 0.0,
+                "profit_factor": 0.0,
+                "historical_confidence_score": 0.0,
+                "historical_confidence_label": (
+                    "UNKNOWN"
+                ),
+                "learning_active": False,
+                "sample_size": 0,
+                "reasons": reasons,
                 "strategies": [],
                 "strategy_count": 0,
             }
@@ -189,6 +203,17 @@ class RecommendationEngine:
         decision = self._make_decision(
             best_strategy
         )
+
+        statistics = best_strategy.get(
+            "statistics",
+            {},
+        )
+
+        if not isinstance(
+            statistics,
+            dict,
+        ):
+            statistics = {}
 
         decision_confidence = (
             self._calculate_decision_confidence(
@@ -216,10 +241,89 @@ class RecommendationEngine:
             "risk_level": (
                 risk_level
             ),
-            "reasons": reasons,
             "best_strategy": (
                 best_strategy
             ),
+            "selected_strategy": str(
+                best_strategy.get(
+                    "strategy",
+                    "UNKNOWN",
+                )
+            ),
+            "strategy_rank": int(
+                self._to_float(
+                    best_strategy.get(
+                        "rank",
+                        0,
+                    )
+                )
+            ),
+            "strategy_score": self._to_float(
+                best_strategy.get(
+                    "score",
+                    0.0,
+                )
+            ),
+            "expected_win_rate": self._to_float(
+                statistics.get(
+                    "win_rate",
+                    0.0,
+                )
+            ),
+            "expected_expectancy": self._to_float(
+                statistics.get(
+                    "expectancy",
+                    0.0,
+                )
+            ),
+            "expected_average_r": self._to_float(
+                statistics.get(
+                    "average_r",
+                    0.0,
+                )
+            ),
+            "expected_hold_minutes": self._to_float(
+                statistics.get(
+                    "average_hold_minutes",
+                    0.0,
+                )
+            ),
+            "profit_factor": statistics.get(
+                "profit_factor",
+                0.0,
+            ),
+            "historical_confidence_score": (
+                self._to_float(
+                    statistics.get(
+                        "confidence_score",
+                        0.0,
+                    )
+                )
+            ),
+            "historical_confidence_label": str(
+                statistics.get(
+                    "confidence_label",
+                    "UNKNOWN",
+                )
+            ),
+            "learning_active": bool(
+                statistics.get(
+                    "learning_active",
+                    False,
+                )
+            ),
+            "sample_size": int(
+                self._to_float(
+                    statistics.get(
+                        "sample_size",
+                        statistics.get(
+                            "trades",
+                            0,
+                        ),
+                    )
+                )
+            ),
+            "reasons": reasons,
             "strategies": ranked,
             "strategy_count": len(
                 ranked
@@ -911,6 +1015,7 @@ if __name__ == "__main__":
             "win_rate": 68.0,
             "expectancy": 240.0,
             "average_r": 2.4,
+            "average_hold_minutes": 30.0,
             "profit_factor": 5.0,
             "confidence_score": 0.95,
             "confidence_label": "HIGH",
@@ -956,6 +1061,45 @@ if __name__ == "__main__":
         result[
             "risk_level"
         ]
+    )
+
+    print(
+        "\nEXPECTED METRICS:"
+    )
+
+    print(
+        f"Selected Strategy: "
+        f"{result['selected_strategy']}"
+    )
+
+    print(
+        f"Strategy Score: "
+        f"{result['strategy_score']}"
+    )
+
+    print(
+        f"Win Rate: "
+        f"{result['expected_win_rate']}%"
+    )
+
+    print(
+        f"Expectancy: "
+        f"₹{result['expected_expectancy']}"
+    )
+
+    print(
+        f"Average R: "
+        f"{result['expected_average_r']}R"
+    )
+
+    print(
+        f"Hold Time: "
+        f"{result['expected_hold_minutes']} min"
+    )
+
+    print(
+        f"Sample Size: "
+        f"{result['sample_size']}"
     )
 
     print(
