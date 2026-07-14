@@ -1,27 +1,61 @@
 from typing import Any, Dict
 
+from intelligence.strategy_ranker import StrategyRanker
+
 
 class MarketBrain:
     """
-    Selects a trading strategy and risk level
-    from the detected market regime.
-
-    Version 1 uses:
-    - Trend
-    - Volatility
-    - Opening gap
+    Chooses the highest-ranked strategy and
+    determines whether the bot should trade.
     """
+
+    def __init__(
+        self,
+        minimum_strategy_score: int = 55,
+    ) -> None:
+        self.minimum_strategy_score = int(
+            minimum_strategy_score
+        )
+
+        self.strategy_ranker = (
+            StrategyRanker()
+        )
 
     def decide(
         self,
         regime_data: Dict[str, Any],
+        intelligence: Dict[str, Any],
     ) -> Dict[str, Any]:
-        trend = str(
-            regime_data.get(
-                "trend",
-                "UNKNOWN",
-            )
-        ).upper()
+        rankings = self.strategy_ranker.rank(
+            regime_data=regime_data,
+            intelligence=intelligence,
+        )
+
+        if not rankings:
+            return {
+                "should_trade": False,
+                "recommended_strategy": (
+                    "VWAP_PULLBACK"
+                ),
+                "confidence": 0,
+                "risk_multiplier": 0.25,
+                "reasons": [
+                    "No strategies were available "
+                    "for ranking."
+                ],
+                "strategy_rankings": [],
+                "regime": regime_data,
+            }
+
+        best = rankings[0]
+
+        selected_strategy = str(
+            best["strategy"]
+        )
+
+        strategy_score = int(
+            best["score"]
+        )
 
         volatility = str(
             regime_data.get(
@@ -30,123 +64,52 @@ class MarketBrain:
             )
         ).upper()
 
-        gap = str(
+        trend = str(
             regime_data.get(
-                "gap",
+                "trend",
                 "UNKNOWN",
             )
         ).upper()
 
-        strategy = "VWAP_PULLBACK"
-        confidence = 50
         risk_multiplier = 1.0
-        reasons = []
-
-        # -------------------------
-        # Strategy selection
-        # -------------------------
-
-        if trend == "TRENDING":
-            strategy = "ORB_BREAKOUT"
-            confidence += 20
-
-            reasons.append(
-                "Trending conditions favor "
-                "breakout trading."
+        reasons = list(
+            best.get(
+                "reasons",
+                [],
             )
-
-        elif trend == "RANGE_BOUND":
-            strategy = "VWAP_PULLBACK"
-            confidence += 20
-
-            reasons.append(
-                "Range-bound conditions favor "
-                "VWAP pullbacks."
-            )
-
-        elif trend == "DOWNTREND":
-            strategy = "VWAP_PULLBACK"
-            confidence -= 10
-            risk_multiplier *= 0.5
-
-            reasons.append(
-                "Downtrend detected. Long-only "
-                "trading risk reduced."
-            )
-
-        else:
-            strategy = "VWAP_PULLBACK"
-
-            reasons.append(
-                "Trend is unclear. Using the "
-                "more conservative VWAP strategy."
-            )
-
-        # -------------------------
-        # Volatility adjustment
-        # -------------------------
+        )
 
         if volatility == "HIGH":
             risk_multiplier *= 0.5
-            confidence -= 10
-
             reasons.append(
-                "High volatility detected; "
-                "risk reduced by 50%."
-            )
-
-        elif volatility == "MEDIUM":
-            reasons.append(
-                "Volatility is within a "
-                "moderate range."
+                "High volatility reduced risk by 50%."
             )
 
         elif volatility == "LOW":
             risk_multiplier *= 0.75
-
             reasons.append(
-                "Low volatility detected; "
-                "risk reduced by 25%."
+                "Low volatility reduced risk by 25%."
             )
 
-        else:
-            confidence -= 5
-
+        if trend == "DOWNTREND":
+            risk_multiplier *= 0.5
             reasons.append(
-                "Volatility information "
-                "is unavailable."
+                "Downtrend reduced long-only exposure."
             )
 
-        # -------------------------
-        # Gap adjustment
-        # -------------------------
-
-        if gap in {
-            "GAP_UP",
-            "GAP_DOWN",
-        }:
-            risk_multiplier *= 0.75
-            confidence -= 5
-
-            reasons.append(
-                f"{gap} detected; risk reduced "
-                "by an additional 25%."
+        market_quality = int(
+            intelligence.get(
+                "market_quality",
+                0,
             )
+            or 0
+        )
 
-        elif gap == "NO_GAP":
+        if market_quality < 50:
+            risk_multiplier *= 0.5
             reasons.append(
-                "No significant opening "
-                "gap detected."
+                "Weak market quality reduced risk."
             )
-
-        else:
-            reasons.append(
-                "Gap information is unavailable."
-            )
-
-        # -------------------------
-        # Final limits
-        # -------------------------
 
         risk_multiplier = max(
             0.25,
@@ -159,28 +122,44 @@ class MarketBrain:
         confidence = max(
             0,
             min(
-                confidence,
+                strategy_score,
                 100,
             ),
         )
 
         should_trade = (
-            confidence >= 50
+            strategy_score
+            >= self.minimum_strategy_score
             and trend != "DOWNTREND"
         )
 
+        if not should_trade:
+            reasons.append(
+                "Best strategy did not meet "
+                "the minimum trading threshold."
+            )
+
         return {
             "should_trade": should_trade,
-            "recommended_strategy": strategy,
+            "recommended_strategy": (
+                selected_strategy
+            ),
             "confidence": confidence,
             "risk_multiplier": round(
                 risk_multiplier,
                 2,
             ),
             "reasons": reasons,
+            "strategy_rankings": rankings,
             "regime": {
                 "trend": trend,
                 "volatility": volatility,
-                "gap": gap,
+                "gap": str(
+                    regime_data.get(
+                        "gap",
+                        "UNKNOWN",
+                    )
+                ).upper(),
             },
+            "market_quality": market_quality,
         }

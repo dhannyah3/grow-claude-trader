@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from analytics.trade_journal import TradeJournal
 
 
 class PaperTrader:
@@ -11,12 +12,19 @@ class PaperTrader:
         starting_balance: float = 100000.0,
         log_file: str = "logs/paper_trades.csv",
         positions_file: str = "logs/open_positions.json",
+        journal_file: str = "logs/trade_journal.json",
     ) -> None:
         self.starting_balance = float(starting_balance)
         self.cash_balance = float(starting_balance)
 
         self.log_file = Path(log_file)
         self.positions_file = Path(positions_file)
+
+        self.trade_journal = TradeJournal(
+            journal_file=journal_file,
+        )
+
+        
 
         self.open_positions: Dict[str, Dict[str, Any]] = {}
         self.closed_trades: List[Dict[str, Any]] = []
@@ -148,23 +156,29 @@ class PaperTrader:
                 stop_loss = float(position["stop_loss"])
 
                 self.open_positions[symbol] = {
-                    "symbol": str(
-                        position.get("symbol", symbol)
-                    ),
-                    "quantity": int(position["quantity"]),
-                    "entry_price": float(
-                        position["entry_price"]
-                    ),
-                    "stop_loss": stop_loss,
-                    "initial_stop_loss": float(
-                        position.get(
-                            "initial_stop_loss",
-                            stop_loss,
-                        )
-                    ),
-                    "target": float(position["target"]),
-                    "entry_time": entry_time,
-                }
+    "symbol": str(
+        position.get("symbol", symbol)
+    ),
+    "quantity": int(position["quantity"]),
+    "entry_price": float(
+        position["entry_price"]
+    ),
+    "stop_loss": stop_loss,
+    "initial_stop_loss": float(
+        position.get(
+            "initial_stop_loss",
+            stop_loss,
+        )
+    ),
+    "target": float(
+        position["target"]
+    ),
+    "entry_time": entry_time,
+    "metadata": position.get(
+        "metadata",
+        {},
+    ),
+}
 
             except (
                 KeyError,
@@ -181,18 +195,22 @@ class PaperTrader:
 
         for symbol, position in self.open_positions.items():
             data[symbol] = {
-                "symbol": position["symbol"],
-                "quantity": position["quantity"],
-                "entry_price": position["entry_price"],
-                "stop_loss": position["stop_loss"],
-                "initial_stop_loss": position[
-                    "initial_stop_loss"
-                ],
-                "target": position["target"],
-                "entry_time": position[
-                    "entry_time"
-                ].isoformat(),
-            }
+              "symbol": position["symbol"],
+              "quantity": position["quantity"],
+              "entry_price": position["entry_price"],
+              "stop_loss": position["stop_loss"],
+              "initial_stop_loss": position[
+              "initial_stop_loss"
+               ],
+              "target": position["target"],
+              "entry_time": position[
+              "entry_time"
+            ].isoformat(),
+            "metadata": position.get(
+            "metadata",
+        {},
+    ),
+}
 
         temporary_file = self.positions_file.with_suffix(".tmp")
 
@@ -218,13 +236,16 @@ class PaperTrader:
         )
 
     def open_trade(
-        self,
-        symbol: str,
-        quantity: int,
-        entry_price: float,
-        stop_loss: float,
-        target: float,
-    ) -> bool:
+    self,
+    symbol: str,
+    quantity: int,
+    entry_price: float,
+    stop_loss: float,
+    target: float,
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> bool:
         if symbol in self.open_positions:
             print(f"{symbol}: position already open.")
             return False
@@ -262,14 +283,15 @@ class PaperTrader:
             return False
 
         position = {
-            "symbol": symbol,
-            "quantity": int(quantity),
-            "entry_price": float(entry_price),
-            "stop_loss": float(stop_loss),
-            "initial_stop_loss": float(stop_loss),
-            "target": float(target),
-            "entry_time": datetime.now(),
-        }
+    "symbol": symbol,
+    "quantity": int(quantity),
+    "entry_price": float(entry_price),
+    "stop_loss": float(stop_loss),
+    "initial_stop_loss": float(stop_loss),
+    "target": float(target),
+    "entry_time": datetime.now(),
+    "metadata": metadata or {},
+}
 
         self.open_positions[symbol] = position
         self.cash_balance -= trade_value
@@ -315,10 +337,20 @@ class PaperTrader:
             "quantity": quantity,
             "entry_price": entry_price,
             "exit_price": float(exit_price),
-            "stop_loss": float(position["stop_loss"]),
-            "target": float(position["target"]),
+            "stop_loss": float(
+                position["stop_loss"]
+            ),
+            "target": float(
+                position["target"]
+            ),
             "pnl": float(pnl),
-            "exit_reason": str(exit_reason),
+            "exit_reason": str(
+                exit_reason
+            ),
+            "metadata": position.get(
+                "metadata",
+                {},
+            ),
         }
 
         self.closed_trades.append(trade)
@@ -326,6 +358,66 @@ class PaperTrader:
 
         self._save_open_positions()
         self._write_trade_to_log(trade)
+
+        metadata = trade.get(
+            "metadata",
+            {},
+        )
+
+        claude_review = metadata.get(
+            "claude_review",
+            {
+                "approved": metadata.get(
+                    "claude_approved",
+                    False,
+                ),
+                "confidence": metadata.get(
+                    "claude_confidence",
+                    0,
+                ),
+                "reason": metadata.get(
+                    "claude_reason",
+                    "",
+                ),
+            },
+        )
+
+        self.trade_journal.add_entry(
+            trade=trade,
+            strategy=metadata.get(
+                "strategy",
+                "UNKNOWN",
+            ),
+            claude_review=claude_review,
+            indicators=metadata.get(
+                "indicators",
+                {},
+            ),
+            market_condition=metadata.get(
+                "market_condition",
+                "UNKNOWN",
+            ),
+            market_regime=metadata.get(
+                "market_regime",
+                {},
+            ),
+            market_intelligence=metadata.get(
+                "market_intelligence",
+                {},
+            ),
+            market_brain=metadata.get(
+                "market_brain",
+                {},
+            ),
+            position_multiplier=metadata.get(
+                "position_multiplier",
+                1.0,
+            ),
+            strategy_score=metadata.get(
+                "strategy_score",
+                0,
+            ),
+        )
 
         print(
             f"Paper SELL: {symbol} | "

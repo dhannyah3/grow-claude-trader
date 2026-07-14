@@ -914,6 +914,75 @@ def open_paper_trades(
             entry_price=entry_price,
             stop_loss=stop_loss,
             target=target_price,
+            metadata={
+                "strategy": selected_strategy,
+                "strategy_score": int(
+                    result.get(
+                        "score",
+                        0,
+                    )
+                    or 0
+                ),
+                "market_condition": (
+                    market_condition
+                ),
+                "market_regime": regime_data,
+                "market_intelligence": (
+                    intelligence
+                ),
+                "market_brain": brain_decision,
+                "claude_review": {
+                    "approved": approved,
+                    "confidence": confidence,
+                    "reason": claude_reason,
+                },
+                "position_multiplier": round(
+                    final_position_multiplier,
+                    4,
+                ),
+                "brain_multiplier": (
+                    brain_multiplier
+                ),
+                "adaptive_multiplier": (
+                    adaptive_multiplier
+                ),
+                "quality_multiplier": (
+                    quality_multiplier
+                ),
+                "adaptive_decision": (
+                    adaptive_decision
+                ),
+                "indicators": {
+                    "rsi": result.get(
+                        "rsi"
+                    ),
+                    "atr": result.get(
+                        "atr"
+                    ),
+                    "ema_20": result.get(
+                        "ema_20"
+                    ),
+                    "ema_50": result.get(
+                        "ema_50"
+                    ),
+                    "vwap": result.get(
+                        "vwap"
+                    ),
+                    "macd": result.get(
+                        "macd"
+                    ),
+                    "macd_signal": (
+                        result.get(
+                            "macd_signal"
+                        )
+                    ),
+                    "opening_high": (
+                        result.get(
+                            "opening_high"
+                        )
+                    ),
+                },
+            },
         )
 
         if not opened:
