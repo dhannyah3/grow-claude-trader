@@ -1,10 +1,10 @@
 """
 Recommendation Engine
 
-Version 6.2.1
+Version 6.2.2
 
-Uses MarketLearning statistics to score
-trading strategies.
+Uses MarketLearning statistics to score and
+rank trading strategies.
 
 Current version supports:
 
@@ -15,18 +15,20 @@ Current version supports:
 - Average-R scoring
 - Expectancy scoring
 - Profit-factor scoring
-- Returning scored strategies
+- Sorting strategies by score
+- Assigning strategy ranks
+- Identifying the best strategy
 
 Future versions will add:
 
-- Sorting strategies by score
-- Assigning ranks
 - TAKE_TRADE / WATCH / SKIP decisions
+- Minimum-confidence protection
 - Strategy-regime recommendations
 - Position-size recommendations
+- Trading-workflow integration
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class RecommendationEngine:
@@ -54,11 +56,9 @@ class RecommendationEngine:
         ],
     ) -> List[Dict[str, Any]]:
         """
-        Calculate a quality score for each
-        strategy.
-
-        Sorting and rank assignment will be
-        added in the next version.
+        Calculate a quality score for every
+        strategy, sort highest first, and assign
+        ranks beginning at one.
         """
         ranked: List[
             Dict[str, Any]
@@ -83,6 +83,9 @@ class RecommendationEngine:
                 strategy
             ).strip().upper()
 
+            if not normalized_strategy:
+                continue
+
             score = (
                 self._calculate_strategy_score(
                     statistics
@@ -101,6 +104,28 @@ class RecommendationEngine:
                 }
             )
 
+        ranked.sort(
+            key=lambda item: (
+                float(
+                    item.get(
+                        "score",
+                        0.0,
+                    )
+                )
+            ),
+            reverse=True,
+        )
+
+        for index, strategy_result in (
+            enumerate(
+                ranked,
+                start=1,
+            )
+        ):
+            strategy_result["rank"] = (
+                index
+            )
+
         return ranked
 
     def recommend(
@@ -111,20 +136,35 @@ class RecommendationEngine:
         ],
     ) -> Dict[str, Any]:
         """
-        Return the currently scored strategies.
+        Return ranked strategies and identify
+        the highest-scoring strategy.
 
-        Decision logic will be added in a later
-        recommendation-engine version.
+        Trade-decision logic will be added in
+        the next version.
         """
         ranked = self.rank_strategies(
             strategy_statistics
+        )
+
+        best_strategy: Optional[
+            Dict[str, Any]
+        ] = (
+            ranked[0]
+            if ranked
+            else None
         )
 
         return {
             "recommendation": (
                 "NO_DECISION"
             ),
+            "best_strategy": (
+                best_strategy
+            ),
             "strategies": ranked,
+            "strategy_count": len(
+                ranked
+            ),
         }
 
     def _calculate_strategy_score(
@@ -132,8 +172,8 @@ class RecommendationEngine:
         statistics: Dict[str, Any],
     ) -> float:
         """
-        Convert strategy performance metrics
-        into a score between 0 and 100.
+        Convert strategy-performance metrics
+        into a score between zero and 100.
         """
         if not isinstance(
             statistics,
@@ -317,16 +357,6 @@ if __name__ == "__main__":
     engine = RecommendationEngine()
 
     statistics = {
-        "ORB_BREAKOUT": {
-            "trades": 80,
-            "win_rate": 68.0,
-            "expectancy": 240.0,
-            "average_r": 2.4,
-            "profit_factor": 5.0,
-            "confidence_score": 0.95,
-            "confidence_label": "HIGH",
-            "learning_active": True,
-        },
         "VWAP_PULLBACK": {
             "trades": 15,
             "win_rate": 54.0,
@@ -334,7 +364,9 @@ if __name__ == "__main__":
             "average_r": 1.1,
             "profit_factor": 1.8,
             "confidence_score": 0.45,
-            "confidence_label": "MEDIUM",
+            "confidence_label": (
+                "MEDIUM"
+            ),
             "learning_active": False,
         },
         "EMA_PULLBACK": {
@@ -346,6 +378,16 @@ if __name__ == "__main__":
             "confidence_score": 0.25,
             "confidence_label": "LOW",
             "learning_active": False,
+        },
+        "ORB_BREAKOUT": {
+            "trades": 80,
+            "win_rate": 68.0,
+            "expectancy": 240.0,
+            "average_r": 2.4,
+            "profit_factor": 5.0,
+            "confidence_score": 0.95,
+            "confidence_label": "HIGH",
+            "learning_active": True,
         },
     }
 
@@ -362,14 +404,37 @@ if __name__ == "__main__":
     )
 
     print(
-        "\nSCORED STRATEGIES:"
+        "\nBEST STRATEGY:"
     )
 
-    for strategy in result[
+    best_strategy = result.get(
+        "best_strategy"
+    )
+
+    if best_strategy is None:
+        print(
+            "No strategy available."
+        )
+
+    else:
+        print(
+            f"{best_strategy['strategy']} | "
+            f"Score: "
+            f"{best_strategy['score']} | "
+            f"Rank: "
+            f"{best_strategy['rank']}"
+        )
+
+    print(
+        "\nRANKINGS:"
+    )
+
+    for strategy_result in result[
         "strategies"
     ]:
         print(
-            f"{strategy['strategy']} | "
+            f"#{strategy_result['rank']} | "
+            f"{strategy_result['strategy']} | "
             f"Score: "
-            f"{strategy['score']}"
+            f"{strategy_result['score']}"
         )
