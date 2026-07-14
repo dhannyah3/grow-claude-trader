@@ -2,12 +2,14 @@ from datetime import datetime
 from math import floor
 from typing import Any, Dict, Optional
 
+from strategies.strategy_profiles import get_strategy_profile
+
 
 class TradeLifecycle:
     """
     Manages the complete lifecycle of every trade.
 
-    Version 9 supports:
+    Version 10 supports:
     - Opening trades
     - Preventing duplicate trades
     - Updating live prices
@@ -17,6 +19,7 @@ class TradeLifecycle:
     - No-momentum exit after a configurable wait
     - Maximum holding-time exit
     - Stalled-trade exit when progress stops
+    - Strategy-specific lifecycle profiles
     - Moving stop loss to breakeven at 1R
     - Configurable multi-level profit booking
     - Multiple profit targets in one price update
@@ -107,6 +110,12 @@ class TradeLifecycle:
             else {}
         )
 
+        strategy_profile = (
+            get_strategy_profile(
+                strategy
+            )
+        )
+
         indicators = trade_metadata.get(
             "indicators",
             {},
@@ -134,8 +143,8 @@ class TradeLifecycle:
             atr = 0.0
 
         try:
-            atr_multiplier = float(
-                trade_metadata.get(
+            profile_atr_multiplier = float(
+                strategy_profile.get(
                     "atr_multiplier",
                     2.0,
                 )
@@ -146,10 +155,170 @@ class TradeLifecycle:
             TypeError,
             ValueError,
         ):
-            atr_multiplier = 2.0
+            profile_atr_multiplier = 2.0
+
+        try:
+            atr_multiplier = float(
+                trade_metadata.get(
+                    "atr_multiplier",
+                    profile_atr_multiplier,
+                )
+                or profile_atr_multiplier
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            atr_multiplier = (
+                profile_atr_multiplier
+            )
 
         if atr_multiplier <= 0:
-            atr_multiplier = 2.0
+            atr_multiplier = (
+                profile_atr_multiplier
+                if profile_atr_multiplier > 0
+                else 2.0
+            )
+
+        try:
+            max_hold_minutes = int(
+                strategy_profile.get(
+                    "max_hold_minutes",
+                    90,
+                )
+                or 90
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            max_hold_minutes = 90
+
+        try:
+            max_wait_for_1r = int(
+                strategy_profile.get(
+                    "max_wait_for_1r",
+                    15,
+                )
+                or 15
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            max_wait_for_1r = 15
+
+        try:
+            max_no_new_high_minutes = int(
+                strategy_profile.get(
+                    "max_no_new_high_minutes",
+                    20,
+                )
+                or 20
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            max_no_new_high_minutes = 20
+
+        raw_profit_targets = (
+            strategy_profile.get(
+                "profit_targets",
+                [],
+            )
+        )
+
+        profit_targets = []
+
+        if isinstance(
+            raw_profit_targets,
+            list,
+        ):
+            for target in raw_profit_targets:
+                if not isinstance(
+                    target,
+                    dict,
+                ):
+                    continue
+
+                try:
+                    target_r = float(
+                        target.get(
+                            "r",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+
+                    target_fraction = float(
+                        target.get(
+                            "fraction",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    continue
+
+                if (
+                    target_r <= 0
+                    or target_fraction <= 0
+                ):
+                    continue
+
+                profit_targets.append(
+                    {
+                        "r": target_r,
+                        "fraction": (
+                            target_fraction
+                        ),
+                        "completed": False,
+                        "quantity": 0,
+                        "exit_price": None,
+                        "exit_time": None,
+                        "realized_pnl": 0.0,
+                    }
+                )
+
+        if not profit_targets:
+            profit_targets = [
+                {
+                    "r": 2.0,
+                    "fraction": 0.25,
+                    "completed": False,
+                    "quantity": 0,
+                    "exit_price": None,
+                    "exit_time": None,
+                    "realized_pnl": 0.0,
+                },
+                {
+                    "r": 3.0,
+                    "fraction": 0.25,
+                    "completed": False,
+                    "quantity": 0,
+                    "exit_price": None,
+                    "exit_time": None,
+                    "realized_pnl": 0.0,
+                },
+                {
+                    "r": 4.0,
+                    "fraction": 0.25,
+                    "completed": False,
+                    "quantity": 0,
+                    "exit_price": None,
+                    "exit_time": None,
+                    "realized_pnl": 0.0,
+                },
+            ]
 
         now = datetime.now()
 
@@ -194,49 +363,32 @@ class TradeLifecycle:
             ),
             "breakeven_activated": False,
             "trailing_active": False,
-            "profit_targets": [
-                {
-                    "r": 2,
-                    "fraction": 0.25,
-                    "completed": False,
-                    "quantity": 0,
-                    "exit_price": None,
-                    "exit_time": None,
-                    "realized_pnl": 0.0,
-                },
-                {
-                    "r": 3,
-                    "fraction": 0.25,
-                    "completed": False,
-                    "quantity": 0,
-                    "exit_price": None,
-                    "exit_time": None,
-                    "realized_pnl": 0.0,
-                },
-                {
-                    "r": 4,
-                    "fraction": 0.25,
-                    "completed": False,
-                    "quantity": 0,
-                    "exit_price": None,
-                    "exit_time": None,
-                    "realized_pnl": 0.0,
-                },
-            ],
+            "profit_targets": (
+                profit_targets
+            ),
             "completed_profit_targets": 0,
             "partial_realized_pnl": 0.0,
             "entry_time": now,
             "last_new_high_time": now,
             "minutes_open": 0.0,
             "minutes_since_new_high": 0.0,
-            "max_hold_minutes": 90,
-            "max_wait_for_1r": 15,
-            "max_no_new_high_minutes": 20,
+            "max_hold_minutes": (
+                max_hold_minutes
+            ),
+            "max_wait_for_1r": (
+                max_wait_for_1r
+            ),
+            "max_no_new_high_minutes": (
+                max_no_new_high_minutes
+            ),
             "exit_time": None,
             "exit_price": None,
             "exit_reason": None,
             "realized_pnl": 0.0,
             "unrealized_pnl": 0.0,
+            "strategy_profile": (
+                strategy_profile
+            ),
             "metadata": trade_metadata,
         }
 
@@ -619,6 +771,11 @@ class TradeLifecycle:
                     0.0,
                 )
             ),
+            "strategy_profile": dict(
+                trade[
+                    "strategy_profile"
+                ]
+            ),
             "initial_quantity": int(
                 trade["initial_quantity"]
             ),
@@ -714,12 +871,12 @@ class TradeLifecycle:
             ):
                 continue
 
-            target_r = int(
+            target_r = float(
                 target.get(
                     "r",
-                    0,
+                    0.0,
                 )
-                or 0
+                or 0.0
             )
 
             fraction = float(
@@ -859,8 +1016,8 @@ class TradeLifecycle:
                     2,
                 ),
                 "reason": (
-                    f"PARTIAL_TARGET_"
-                    f"{target_r}R"
+                    "PARTIAL_TARGET_"
+                    f"{target_r:g}R"
                 ),
             }
 
@@ -870,7 +1027,7 @@ class TradeLifecycle:
 
             print(
                 f"{normalized_symbol}: "
-                f"{target_r}R profit target "
+                f"{target_r:g}R profit target "
                 f"signal | Qty: {quantity} | "
                 f"Remaining: "
                 f"{trade['remaining_quantity']} | "
