@@ -1,7 +1,7 @@
 """
 Recommendation Engine
 
-Version 6.3.2
+Version 6.3.3
 
 Uses MarketLearning statistics to score,
 rank, and evaluate trading strategies.
@@ -24,10 +24,10 @@ Current version supports:
   - SKIP
   - INSUFFICIENT_DATA
 - Building human-readable decision reasons
+- Calculating decision confidence
 
 Future versions will add:
 
-- Decision confidence
 - Risk level
 - Strategy-regime recommendations
 - Position-size recommendations
@@ -179,6 +179,7 @@ class RecommendationEngine:
                 "recommendation": (
                     "INSUFFICIENT_DATA"
                 ),
+                "decision_confidence": 0.0,
                 "reasons": reasons,
                 "best_strategy": None,
                 "strategies": [],
@@ -189,6 +190,12 @@ class RecommendationEngine:
             best_strategy
         )
 
+        decision_confidence = (
+            self._calculate_decision_confidence(
+                best_strategy
+            )
+        )
+
         reasons = self._build_reasons(
             strategy_result=best_strategy,
             decision=decision,
@@ -197,6 +204,9 @@ class RecommendationEngine:
         return {
             "decision": decision,
             "recommendation": decision,
+            "decision_confidence": (
+                decision_confidence
+            ),
             "reasons": reasons,
             "best_strategy": (
                 best_strategy
@@ -547,6 +557,104 @@ class RecommendationEngine:
 
         return reasons
 
+    def _calculate_decision_confidence(
+        self,
+        strategy_result: Dict[
+            str,
+            Any,
+        ],
+    ) -> float:
+        """
+        Calculate confidence in the final
+        recommendation from zero to 100.
+
+        This is different from historical
+        confidence because it combines the
+        strategy score, historical confidence,
+        win rate, and profit factor.
+        """
+        if not isinstance(
+            strategy_result,
+            dict,
+        ):
+            return 0.0
+
+        statistics = (
+            strategy_result.get(
+                "statistics",
+                {},
+            )
+        )
+
+        if not isinstance(
+            statistics,
+            dict,
+        ):
+            return 0.0
+
+        score = self._clamp(
+            self._to_float(
+                strategy_result.get(
+                    "score",
+                    0.0,
+                )
+            ),
+            minimum=0.0,
+            maximum=100.0,
+        )
+
+        historical_confidence = (
+            self._clamp(
+                self._to_float(
+                    statistics.get(
+                        "confidence_score",
+                        0.0,
+                    )
+                ),
+                minimum=0.0,
+                maximum=1.0,
+            )
+            * 100.0
+        )
+
+        win_rate = self._clamp(
+            self._to_float(
+                statistics.get(
+                    "win_rate",
+                    0.0,
+                )
+            ),
+            minimum=0.0,
+            maximum=100.0,
+        )
+
+        normalized_profit_factor = (
+            self._normalize_profit_factor(
+                statistics.get(
+                    "profit_factor",
+                    0.0,
+                )
+            )
+            / self.maximum_profit_factor
+            * 100.0
+        )
+
+        decision_confidence = (
+            score * 0.50
+            + historical_confidence * 0.30
+            + win_rate * 0.10
+            + normalized_profit_factor * 0.10
+        )
+
+        return round(
+            self._clamp(
+                decision_confidence,
+                minimum=0.0,
+                maximum=100.0,
+            ),
+            2,
+        )
+
     def _calculate_strategy_score(
         self,
         statistics: Dict[str, Any],
@@ -794,6 +902,14 @@ if __name__ == "__main__":
         result[
             "decision"
         ]
+    )
+
+    print(
+        "\nDECISION CONFIDENCE:"
+    )
+
+    print(
+        f"{result['decision_confidence']:.2f}%"
     )
 
     print(
