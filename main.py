@@ -11,8 +11,15 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 
 from analytics.adaptive_filter import AdaptiveTradeFilter
+from analytics.market_learning import MarketLearning
 from analytics.market_regime import MarketRegime
+from analytics.recommendation_engine import (
+    RecommendationEngine,
+)
 from analytics.performance_coach import PerformanceCoach
+from core.dynamic_position_sizer import (
+    DynamicPositionSizer,
+)
 from core.market_clock import (
     can_open_new_trade,
     market_status,
@@ -550,6 +557,303 @@ def get_claude_review(
         }
 
 
+
+def prepare_learning_trades(
+    closed_trades: Any,
+) -> List[Dict[str, Any]]:
+    """
+    Normalize PaperTrader history for MarketLearning.
+
+    Older CSV-loaded trades may not contain metadata,
+    R multiples, or holding time. Missing values are
+    calculated where possible and otherwise defaulted
+    safely.
+    """
+    if not isinstance(
+        closed_trades,
+        list,
+    ):
+        return []
+
+    normalized_trades: List[
+        Dict[str, Any]
+    ] = []
+
+    for original_trade in closed_trades:
+        if not isinstance(
+            original_trade,
+            dict,
+        ):
+            continue
+
+        trade = dict(
+            original_trade
+        )
+
+        metadata = trade.get(
+            "metadata",
+            {},
+        )
+
+        if not isinstance(
+            metadata,
+            dict,
+        ):
+            metadata = {}
+
+        trade["strategy"] = str(
+            trade.get(
+                "strategy",
+                metadata.get(
+                    "strategy",
+                    "UNKNOWN",
+                ),
+            )
+        ).strip().upper()
+
+        trade["market_condition"] = str(
+            trade.get(
+                "market_condition",
+                metadata.get(
+                    "market_condition",
+                    "UNKNOWN",
+                ),
+            )
+        ).strip().upper()
+
+        if "r_multiple" not in trade:
+            try:
+                entry_price = float(
+                    trade.get(
+                        "entry_price",
+                        0.0,
+                    )
+                    or 0.0
+                )
+
+                stop_loss = float(
+                    trade.get(
+                        "initial_stop_loss",
+                        trade.get(
+                            "stop_loss",
+                            0.0,
+                        ),
+                    )
+                    or 0.0
+                )
+
+                quantity = int(
+                    trade.get(
+                        "quantity",
+                        0,
+                    )
+                    or 0
+                )
+
+                initial_risk = (
+                    entry_price
+                    - stop_loss
+                ) * quantity
+
+                pnl = float(
+                    trade.get(
+                        "pnl",
+                        0.0,
+                    )
+                    or 0.0
+                )
+
+                trade["r_multiple"] = (
+                    pnl / initial_risk
+                    if initial_risk > 0
+                    else 0.0
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                trade["r_multiple"] = 0.0
+
+        if "holding_minutes" not in trade:
+            try:
+                entry_time = pd.to_datetime(
+                    trade.get(
+                        "entry_time"
+                    )
+                )
+
+                exit_time = pd.to_datetime(
+                    trade.get(
+                        "exit_time"
+                    )
+                )
+
+                holding_minutes = (
+                    exit_time
+                    - entry_time
+                ).total_seconds() / 60.0
+
+                trade["holding_minutes"] = max(
+                    0.0,
+                    float(
+                        holding_minutes
+                    ),
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                trade["holding_minutes"] = 0.0
+
+        normalized_trades.append(
+            trade
+        )
+
+    return normalized_trades
+
+
+def build_trade_recommendation(
+    market_learning: MarketLearning,
+    recommendation_engine: RecommendationEngine,
+    trader: PaperTrader,
+    strategy: str,
+    market_condition: str,
+    claude_confidence: int,
+) -> Dict[str, Any]:
+    """
+    Build a recommendation for the strategy selected
+    for the current signal.
+
+    During the paper-learning cold start, fewer than
+    20 historical trades produce INSUFFICIENT_DATA.
+    The system then permits a reduced-size exploratory
+    paper trade so it can collect evidence safely.
+    """
+    learning_trades = prepare_learning_trades(
+        getattr(
+            trader,
+            "closed_trades",
+            [],
+        )
+    )
+
+    market_learning.load_trades(
+        learning_trades
+    )
+
+    normalized_strategy = str(
+        strategy
+    ).strip().upper()
+
+    normalized_market = str(
+        market_condition
+    ).strip().upper()
+
+    statistics = (
+        market_learning
+        .strategy_market_statistics(
+            strategy=normalized_strategy,
+            market_condition=normalized_market,
+        )
+    )
+
+    statistics_source = (
+        "STRATEGY_MARKET"
+    )
+
+    if not statistics:
+        statistics = (
+            market_learning
+            .strategy_statistics(
+                normalized_strategy
+            )
+        )
+
+        statistics_source = (
+            "STRATEGY_OVERALL"
+        )
+
+    recommendation_input = (
+        {
+            normalized_strategy: (
+                statistics
+            )
+        }
+        if statistics
+        else {}
+    )
+
+    recommendation = (
+        recommendation_engine.recommend(
+            recommendation_input
+        )
+    )
+
+    recommendation[
+        "statistics_source"
+    ] = statistics_source
+
+    recommendation[
+        "market_condition"
+    ] = normalized_market
+
+    if recommendation.get(
+        "decision"
+    ) == "INSUFFICIENT_DATA":
+        cold_start_confidence = max(
+            60.0,
+            min(
+                float(
+                    claude_confidence
+                ),
+                74.99,
+            ),
+        )
+
+        existing_reasons = list(
+            recommendation.get(
+                "reasons",
+                [],
+            )
+        )
+
+        recommendation.update(
+            {
+                "decision": "TAKE_TRADE",
+                "recommendation": (
+                    "TAKE_TRADE"
+                ),
+                "decision_confidence": (
+                    cold_start_confidence
+                ),
+                "risk_level": "HIGH",
+                "selected_strategy": (
+                    normalized_strategy
+                ),
+                "learning_active": False,
+                "cold_start_mode": True,
+                "reasons": (
+                    existing_reasons
+                    + [
+                        (
+                            "Paper-learning cold start: "
+                            "allowing a reduced-size "
+                            "exploratory trade."
+                        )
+                    ]
+                ),
+            }
+        )
+
+    else:
+        recommendation[
+            "cold_start_mode"
+        ] = False
+
+    return recommendation
+
 def open_paper_trades(
     scan_results: List[Dict[str, Any]],
     market: MarketData,
@@ -559,6 +863,9 @@ def open_paper_trades(
     claude: ClaudeAnalyzer,
     performance_coach: PerformanceCoach,
     adaptive_filter: AdaptiveTradeFilter,
+    market_learning: MarketLearning,
+    recommendation_engine: RecommendationEngine,
+    dynamic_position_sizer: DynamicPositionSizer,
 ) -> None:
     """
     Open paper trades from already analyzed scanner results.
@@ -898,17 +1205,94 @@ def open_paper_trades(
             )
         )
 
-        quantity = int(
+        pre_dynamic_quantity = int(
             base_quantity
             * final_position_multiplier
         )
 
-        if quantity <= 0:
+        recommendation = (
+            build_trade_recommendation(
+                market_learning=(
+                    market_learning
+                ),
+                recommendation_engine=(
+                    recommendation_engine
+                ),
+                trader=trader,
+                strategy=selected_strategy,
+                market_condition=(
+                    market_condition
+                ),
+                claude_confidence=(
+                    confidence
+                ),
+            )
+        )
+
+        position_result = (
+            dynamic_position_sizer
+            .size_position(
+                recommendation=(
+                    recommendation
+                ),
+                base_quantity=(
+                    pre_dynamic_quantity
+                ),
+            )
+        )
+
+        if not position_result.get(
+            "allowed",
+            False,
+        ):
             print(
-                f"{symbol}: adjusted quantity "
-                "is zero."
+                f"{symbol}: "
+                f"{position_result.get('reason', 'Position blocked.')}"
             )
             continue
+
+        quantity = int(
+            position_result.get(
+                "adjusted_quantity",
+                0,
+            )
+        )
+
+        dynamic_multiplier = float(
+            position_result.get(
+                "position_multiplier",
+                0.0,
+            )
+            or 0.0
+        )
+
+        combined_position_multiplier = (
+            final_position_multiplier
+            * dynamic_multiplier
+        )
+
+        if quantity <= 0:
+            print(
+                f"{symbol}: dynamic position "
+                "quantity is zero."
+            )
+            continue
+
+        result["recommendation"] = (
+            recommendation
+        )
+        result["position_sizing"] = (
+            position_result
+        )
+        result["dynamic_multiplier"] = (
+            dynamic_multiplier
+        )
+        result[
+            "combined_position_multiplier"
+        ] = round(
+            combined_position_multiplier,
+            4,
+        )
 
         opened = trader.open_trade(
             symbol=symbol,
@@ -939,8 +1323,21 @@ def open_paper_trades(
                     "reason": claude_reason,
                 },
                 "position_multiplier": round(
+                    combined_position_multiplier,
+                    4,
+                ),
+                "pre_dynamic_multiplier": round(
                     final_position_multiplier,
                     4,
+                ),
+                "dynamic_multiplier": (
+                    dynamic_multiplier
+                ),
+                "recommendation": (
+                    recommendation
+                ),
+                "position_sizing": (
+                    position_result
                 ),
                 "brain_multiplier": (
                     brain_multiplier
@@ -1024,6 +1421,16 @@ def open_paper_trades(
                         "confidence": confidence,
                         "reason": claude_reason,
                     },
+                    "recommendation": (
+                        recommendation
+                    ),
+                    "position_sizing": (
+                        position_result
+                    ),
+                    "position_multiplier": round(
+                        combined_position_multiplier,
+                        4,
+                    ),
                     "indicators": {
                         "rsi": result.get(
                             "rsi"
@@ -1081,7 +1488,7 @@ def open_paper_trades(
                     0.0,
                 )
             )
-            * final_position_multiplier
+            * combined_position_multiplier
         )
 
         print(
@@ -1094,8 +1501,14 @@ def open_paper_trades(
             f"{adaptive_multiplier:.2f} | "
             f"Quality: "
             f"{quality_multiplier:.2f} | "
-            f"Final: "
+            f"Pre-Dynamic: "
             f"{final_position_multiplier:.2f} | "
+            f"Dynamic: "
+            f"{dynamic_multiplier:.2f} | "
+            f"Combined: "
+            f"{combined_position_multiplier:.2f} | "
+            f"Decision: "
+            f"{recommendation.get('decision', 'UNKNOWN')} | "
             f"Entry: ₹{entry_price:.2f} | "
             f"Stop: ₹{stop_loss:.2f} | "
             f"Target: ₹{target_price:.2f} | "
@@ -1186,107 +1599,43 @@ def monitor_positions(
             )
 
         # -------------------------
-        # Execute profit targets
+        # Execute partial exit
         # -------------------------
 
-        partial_exits = (
+        partial_exit = (
             lifecycle_update.get(
-                "partial_exits",
+                "partial_exit",
                 {},
             )
         )
 
-        partial_orders = []
-
-        if isinstance(
-            partial_exits,
-            dict,
-        ):
-            orders_value = (
-                partial_exits.get(
-                    "orders",
-                    [],
-                )
-            )
-
-            if isinstance(
-                orders_value,
-                list,
-            ):
-                partial_orders = (
-                    orders_value
-                )
-
-        for partial_order in partial_orders:
-            if not isinstance(
-                partial_order,
+        if (
+            isinstance(
+                partial_exit,
                 dict,
-            ):
-                continue
-
-            if not partial_order.get(
+            )
+            and partial_exit.get(
                 "execute",
                 False,
-            ):
-                continue
-
-            partial_quantity = int(
-                partial_order.get(
-                    "quantity",
-                    0,
-                )
-                or 0
             )
-
-            if partial_quantity <= 0:
-                print(
-                    f"{symbol}: invalid partial "
-                    "exit quantity."
-                )
-                continue
-
-            paper_position = (
-                trader.get_open_position(
-                    symbol
-                )
-            )
-
-            if paper_position is None:
-                print(
-                    f"{symbol}: paper position "
-                    "was unavailable during "
-                    "partial exit."
-                )
-                break
-
-            current_paper_quantity = int(
-                paper_position[
-                    "quantity"
-                ]
-            )
-
-            if partial_quantity >= (
-                current_paper_quantity
-            ):
-                print(
-                    f"{symbol}: partial exit "
-                    "would close the complete "
-                    "position. Skipping."
-                )
-                continue
-
+        ):
             partial_result = (
                 trader.partial_close_trade(
                     symbol=symbol,
                     exit_price=float(
-                        partial_order.get(
+                        partial_exit.get(
                             "exit_price",
                             current_price,
                         )
                     ),
-                    quantity=partial_quantity,
+                    quantity=int(
+                        partial_exit.get(
+                            "quantity",
+                            0,
+                        )
+                    ),
                     exit_reason=str(
-                        partial_order.get(
+                        partial_exit.get(
                             "reason",
                             "PARTIAL_TARGET",
                         )
@@ -1299,53 +1648,27 @@ def monitor_positions(
                     f"{symbol}: partial exit "
                     "execution failed."
                 )
-                break
 
-            print(
-                f"{symbol}: "
-                f"{partial_order.get('target_r', '?')}R "
-                f"profit booked | "
-                f"Qty: "
-                f"{partial_result['quantity']} | "
-                f"Remaining: "
-                f"{partial_result['remaining_quantity']} | "
-                f"Partial P&L: ₹"
-                f"{partial_result['partial_pnl']:.2f}"
-            )
-
-        # -------------------------
-        # Display live position
-        # -------------------------
-
-        paper_position = (
-            trader.get_open_position(
-                symbol
-            )
-        )
-
-        paper_quantity = (
-            int(
-                paper_position[
-                    "quantity"
-                ]
-            )
-            if paper_position is not None
-            else 0
-        )
+            else:
+                print(
+                    f"{symbol}: partial profit "
+                    f"booked | Qty: "
+                    f"{partial_result['quantity']} | "
+                    f"Remaining: "
+                    f"{partial_result['remaining_quantity']} | "
+                    f"Partial P&L: ₹"
+                    f"{partial_result['partial_pnl']:.2f}"
+                )
 
         print(
             f"{symbol} | "
             f"Current: ₹{current_price:.2f} | "
             f"Remaining Qty: "
-            f"{paper_quantity} | "
+            f"{lifecycle_update.get('remaining_quantity', 0)} | "
             f"Unrealized P&L: ₹"
             f"{lifecycle_update.get('unrealized_pnl', 0.0):.2f} | "
             f"Partial P&L: ₹"
             f"{lifecycle_update.get('partial_realized_pnl', 0.0):.2f} | "
-            f"Targets Completed: "
-            f"{lifecycle_update.get('completed_profit_targets', 0)} | "
-            f"Trailing: "
-            f"{lifecycle_update.get('trailing_mode', 'UNKNOWN')} | "
             f"Stop: ₹{lifecycle_stop:.2f}"
         )
 
@@ -1554,6 +1877,16 @@ def main() -> None:
         )
     )
 
+    market_learning = MarketLearning()
+
+    recommendation_engine = (
+        RecommendationEngine()
+    )
+
+    dynamic_position_sizer = (
+        DynamicPositionSizer()
+    )
+
     trader = PaperTrader(
         starting_balance=100000.0,
         log_file="logs/paper_trades.csv",
@@ -1691,6 +2024,15 @@ def main() -> None:
                 ),
                 adaptive_filter=(
                     adaptive_filter
+                ),
+                market_learning=(
+                    market_learning
+                ),
+                recommendation_engine=(
+                    recommendation_engine
+                ),
+                dynamic_position_sizer=(
+                    dynamic_position_sizer
                 ),
             )
 
