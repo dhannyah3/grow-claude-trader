@@ -26,6 +26,9 @@ from core.market_clock import (
     now_in_india,
 )
 from core.paper_trader import PaperTrader
+from core.portfolio_heat_manager import (
+    PortfolioHeatManager,
+)
 from core.risk_manager import RiskManager
 from core.trade_lifecycle import TradeLifecycle
 from data.market_data import MarketData
@@ -866,6 +869,7 @@ def open_paper_trades(
     market_learning: MarketLearning,
     recommendation_engine: RecommendationEngine,
     dynamic_position_sizer: DynamicPositionSizer,
+    portfolio_heat_manager: PortfolioHeatManager,
 ) -> None:
     """
     Open paper trades from already analyzed scanner results.
@@ -1294,6 +1298,104 @@ def open_paper_trades(
             4,
         )
 
+        adjusted_risk = (
+            float(
+                plan.get(
+                    "risk_amount",
+                    0.0,
+                )
+            )
+            * combined_position_multiplier
+        )
+
+        proposed_sector = str(
+            result.get(
+                "sector",
+                result.get(
+                    "industry",
+                    "UNKNOWN",
+                ),
+            )
+            or "UNKNOWN"
+        ).strip().upper()
+
+        open_position_risk = []
+
+        for open_position in (
+            trader.open_positions.values()
+        ):
+            if not isinstance(
+                open_position,
+                dict,
+            ):
+                continue
+
+            open_metadata = open_position.get(
+                "metadata",
+                {},
+            )
+
+            if not isinstance(
+                open_metadata,
+                dict,
+            ):
+                open_metadata = {}
+
+            open_position_risk.append(
+                {
+                    "risk_amount": float(
+                        open_metadata.get(
+                            "adjusted_risk",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                    "sector": str(
+                        open_metadata.get(
+                            "sector",
+                            "UNKNOWN",
+                        )
+                        or "UNKNOWN"
+                    ).strip().upper(),
+                }
+            )
+
+        heat_result = (
+            portfolio_heat_manager.evaluate(
+                account_balance=float(
+                    trader.starting_balance
+                ),
+                proposed_risk_amount=(
+                    adjusted_risk
+                ),
+                open_positions=(
+                    open_position_risk
+                ),
+                proposed_sector=(
+                    proposed_sector
+                ),
+            )
+        )
+
+        if not heat_result.get(
+            "allowed",
+            False,
+        ):
+            print(
+                f"{symbol}: portfolio heat "
+                f"blocked trade | "
+                f"{heat_result.get('reason', 'Risk limit exceeded.')}"
+            )
+            continue
+
+        result["portfolio_heat"] = (
+            heat_result
+        )
+        result["adjusted_risk"] = (
+            adjusted_risk
+        )
+        result["sector"] = proposed_sector
+
         opened = trader.open_trade(
             symbol=symbol,
             quantity=quantity,
@@ -1339,6 +1441,13 @@ def open_paper_trades(
                 "position_sizing": (
                     position_result
                 ),
+                "portfolio_heat": (
+                    heat_result
+                ),
+                "adjusted_risk": (
+                    adjusted_risk
+                ),
+                "sector": proposed_sector,
                 "brain_multiplier": (
                     brain_multiplier
                 ),
@@ -1427,6 +1536,13 @@ def open_paper_trades(
                     "position_sizing": (
                         position_result
                     ),
+                    "portfolio_heat": (
+                        heat_result
+                    ),
+                    "adjusted_risk": (
+                        adjusted_risk
+                    ),
+                    "sector": proposed_sector,
                     "position_multiplier": round(
                         combined_position_multiplier,
                         4,
@@ -1480,16 +1596,6 @@ def open_paper_trades(
                 ),
             )
             continue
-
-        adjusted_risk = (
-            float(
-                plan.get(
-                    "risk_amount",
-                    0.0,
-                )
-            )
-            * combined_position_multiplier
-        )
 
         print(
             f"{symbol} paper trade opened | "
@@ -1887,6 +1993,14 @@ def main() -> None:
         DynamicPositionSizer()
     )
 
+    portfolio_heat_manager = (
+        PortfolioHeatManager(
+            max_total_risk_percent=2.0,
+            max_open_positions=2,
+            max_sector_positions=1,
+        )
+    )
+
     trader = PaperTrader(
         starting_balance=100000.0,
         log_file="logs/paper_trades.csv",
@@ -2033,6 +2147,9 @@ def main() -> None:
                 ),
                 dynamic_position_sizer=(
                     dynamic_position_sizer
+                ),
+                portfolio_heat_manager=(
+                    portfolio_heat_manager
                 ),
             )
 
