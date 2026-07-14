@@ -1,7 +1,7 @@
 """
 Market Learning Engine
 
-Version 4
+Version 5
 
 This module analyzes completed trades and
 builds statistics that will eventually allow
@@ -22,10 +22,11 @@ Current version supports:
 - Calculating average R multiple
 - Calculating average holding time
 - Comparing strategy-regime combinations
+- Sample-size confidence scoring
+- Learning activation thresholds
 
 Future versions will add:
 
-- Sample-size confidence
 - MFE and MAE analysis
 - ATR performance
 - Regime-aware recommendations
@@ -395,6 +396,55 @@ class MarketLearning:
 
         return results
 
+    def _calculate_confidence(
+        self,
+        trades: int,
+    ) -> Dict[str, Any]:
+        """
+        Return confidence information based on
+        the available sample size.
+        """
+        trade_count = max(
+            0,
+            int(
+                trades
+            ),
+        )
+
+        if trade_count >= 50:
+            return {
+                "confidence_score": 1.0,
+                "confidence_label": "HIGH",
+                "learning_active": True,
+            }
+
+        if trade_count >= 20:
+            return {
+                "confidence_score": 0.75,
+                "confidence_label": "GOOD",
+                "learning_active": True,
+            }
+
+        if trade_count >= 10:
+            return {
+                "confidence_score": 0.5,
+                "confidence_label": "MEDIUM",
+                "learning_active": False,
+            }
+
+        if trade_count >= 5:
+            return {
+                "confidence_score": 0.25,
+                "confidence_label": "LOW",
+                "learning_active": False,
+            }
+
+        return {
+            "confidence_score": 0.1,
+            "confidence_label": "VERY_LOW",
+            "learning_active": False,
+        }
+
     def _calculate_statistics(
         self,
         trades: List[
@@ -552,6 +602,12 @@ class MarketLearning:
                 / gross_loss
             )
 
+        confidence = (
+            self._calculate_confidence(
+                total_trades
+            )
+        )
+
         return {
             "trades": (
                 total_trades
@@ -623,6 +679,24 @@ class MarketLearning:
                     float,
                 )
                 else profit_factor
+            ),
+            "sample_size": (
+                total_trades
+            ),
+            "confidence_score": float(
+                confidence[
+                    "confidence_score"
+                ]
+            ),
+            "confidence_label": str(
+                confidence[
+                    "confidence_label"
+                ]
+            ),
+            "learning_active": bool(
+                confidence[
+                    "learning_active"
+                ]
             ),
         }
 
@@ -791,3 +865,21 @@ if __name__ == "__main__":
     print(
         learner.all_strategy_market_statistics()
     )
+
+    print(
+        "\nCONFIDENCE EXAMPLES:"
+    )
+
+    for trade_count in [
+        3,
+        7,
+        15,
+        30,
+        100,
+    ]:
+        print(
+            trade_count,
+            learner._calculate_confidence(
+                trade_count
+            ),
+        )
