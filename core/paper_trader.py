@@ -397,15 +397,14 @@ class PaperTrader:
         if new_stop_loss <= current_stop_loss:
             return False
 
-        entry_price = float(
-            position["entry_price"]
+        target = float(
+            position["target"]
         )
 
-        if new_stop_loss > entry_price:
+        if new_stop_loss >= target:
             print(
                 f"{normalized_symbol}: stop loss "
-                "cannot be above entry price in "
-                "the current long-only paper model."
+                "must remain below the target."
             )
             return False
 
@@ -422,6 +421,7 @@ class PaperTrader:
         )
 
         return True
+    
 
     def close_trade(
         self,

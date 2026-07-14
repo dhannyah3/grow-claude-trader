@@ -1,4 +1,5 @@
 from datetime import datetime
+from math import floor
 from typing import Any, Dict, Optional
 
 
@@ -6,14 +7,16 @@ class TradeLifecycle:
     """
     Manages the complete lifecycle of every trade.
 
-    Version 2 supports:
+    Version 3 supports:
     - Opening trades
     - Preventing duplicate trades
     - Updating live prices
     - Calculating unrealized P&L
     - Tracking highest and lowest prices
-    - Moving stop loss to breakeven
-    - Detecting stop-loss and target exits
+    - Moving stop loss to breakeven at 1R
+    - Risk-based trailing stops from 2R onward
+    - Detecting stop-loss, breakeven, trailing,
+      and target exits
     - Closing trades
     """
 
@@ -35,27 +38,27 @@ class TradeLifecycle:
             Dict[str, Any]
         ] = None,
     ) -> bool:
-        symbol = str(
+        normalized_symbol = str(
             symbol
         ).strip().upper()
 
-        if not symbol:
+        if not normalized_symbol:
             print(
                 "Lifecycle trade requires a symbol."
             )
             return False
 
-        if symbol in self.active_trades:
+        if normalized_symbol in self.active_trades:
             print(
-                f"{symbol}: lifecycle trade "
-                "already exists."
+                f"{normalized_symbol}: lifecycle "
+                "trade already exists."
             )
             return False
 
         if quantity <= 0:
             print(
-                f"{symbol}: quantity must "
-                "be positive."
+                f"{normalized_symbol}: quantity "
+                "must be positive."
             )
             return False
 
@@ -65,13 +68,30 @@ class TradeLifecycle:
             < target
         ):
             print(
-                f"{symbol}: invalid entry, "
-                "stop, or target."
+                f"{normalized_symbol}: invalid "
+                "entry, stop, or target."
             )
             return False
 
+        entry_price = float(
+            entry_price
+        )
+
+        stop_loss = float(
+            stop_loss
+        )
+
+        target = float(
+            target
+        )
+
+        risk_per_share = (
+            entry_price
+            - stop_loss
+        )
+
         trade = {
-            "symbol": symbol,
+            "symbol": normalized_symbol,
             "strategy": str(
                 strategy
             ),
@@ -79,28 +99,23 @@ class TradeLifecycle:
             "quantity": int(
                 quantity
             ),
-            "entry_price": float(
+            "entry_price": entry_price,
+            "current_price": entry_price,
+            "stop_loss": stop_loss,
+            "initial_stop_loss": stop_loss,
+            "target": target,
+            "risk_per_share": (
+                risk_per_share
+            ),
+            "highest_price": entry_price,
+            "lowest_price": entry_price,
+            "highest_r_multiple": 0,
+            "breakeven_trigger": (
                 entry_price
-            ),
-            "current_price": float(
-                entry_price
-            ),
-            "stop_loss": float(
-                stop_loss
-            ),
-            "initial_stop_loss": float(
-                stop_loss
+                + risk_per_share
             ),
             "breakeven_activated": False,
-            "target": float(
-                target
-            ),
-            "highest_price": float(
-                entry_price
-            ),
-            "lowest_price": float(
-                entry_price
-            ),
+            "trailing_active": False,
             "entry_time": datetime.now(),
             "exit_time": None,
             "exit_price": None,
@@ -111,11 +126,12 @@ class TradeLifecycle:
         }
 
         self.active_trades[
-            symbol
+            normalized_symbol
         ] = trade
 
         print(
-            f"Lifecycle OPEN: {symbol} | "
+            f"Lifecycle OPEN: "
+            f"{normalized_symbol} | "
             f"Qty: {quantity} | "
             f"Entry: ₹{entry_price:.2f}"
         )
@@ -152,8 +168,8 @@ class TradeLifecycle:
             return {
                 "updated": False,
                 "reason": (
-                    f"{normalized_symbol}: no active "
-                    "lifecycle trade."
+                    f"{normalized_symbol}: no "
+                    "active lifecycle trade."
                 ),
             }
 
@@ -205,47 +221,12 @@ class TradeLifecycle:
             unrealized_pnl
         )
 
-        initial_stop_loss = float(
-            trade["initial_stop_loss"]
-        )
-
-        initial_risk = (
-            entry_price
-            - initial_stop_loss
-        )
-
-        breakeven_trigger = (
-            entry_price
-            + initial_risk
-        )
-
-        breakeven_activated_now = False
-
-        if (
-            initial_risk > 0
-            and not bool(
-                trade[
-                    "breakeven_activated"
-                ]
+        trailing_result = (
+            self.update_trailing_stop(
+                symbol=normalized_symbol,
+                current_price=current_price,
             )
-            and current_price
-            >= breakeven_trigger
-        ):
-            trade["stop_loss"] = float(
-                entry_price
-            )
-
-            trade[
-                "breakeven_activated"
-            ] = True
-
-            breakeven_activated_now = True
-
-            print(
-                f"{normalized_symbol}: stop "
-                f"moved to breakeven "
-                f"₹{entry_price:.2f}"
-            )
+        )
 
         exit_signal = None
 
@@ -253,11 +234,15 @@ class TradeLifecycle:
             trade["stop_loss"]
         ):
             if bool(
-                trade[
-                    "breakeven_activated"
-                ]
+                trade["trailing_active"]
+            ):
+                exit_signal = "TRAILING_STOP"
+
+            elif bool(
+                trade["breakeven_activated"]
             ):
                 exit_signal = "BREAKEVEN_STOP"
+
             else:
                 exit_signal = "STOP_LOSS"
 
@@ -283,22 +268,178 @@ class TradeLifecycle:
             "stop_loss": float(
                 trade["stop_loss"]
             ),
-            "initial_stop_loss": (
-                initial_stop_loss
+            "initial_stop_loss": float(
+                trade["initial_stop_loss"]
             ),
-            "breakeven_trigger": round(
-                breakeven_trigger,
-                2,
+            "risk_per_share": float(
+                trade["risk_per_share"]
+            ),
+            "breakeven_trigger": float(
+                trade["breakeven_trigger"]
             ),
             "breakeven_activated": bool(
+                trade["breakeven_activated"]
+            ),
+            "breakeven_activated_now": bool(
+                trailing_result.get(
+                    "breakeven_activated_now",
+                    False,
+                )
+            ),
+            "trailing_active": bool(
+                trade["trailing_active"]
+            ),
+            "trailing_updated": bool(
+                trailing_result.get(
+                    "trailing_updated",
+                    False,
+                )
+            ),
+            "highest_r_multiple": int(
+                trade["highest_r_multiple"]
+            ),
+            "current_r_multiple": float(
+                trailing_result.get(
+                    "current_r_multiple",
+                    0.0,
+                )
+            ),
+            "exit_signal": exit_signal,
+        }
+
+    def update_trailing_stop(
+        self,
+        symbol: str,
+        current_price: float,
+    ) -> Dict[str, Any]:
+        normalized_symbol = str(
+            symbol
+        ).strip().upper()
+
+        trade = self.active_trades.get(
+            normalized_symbol
+        )
+
+        if trade is None:
+            return {
+                "updated": False,
+                "reason": (
+                    f"{normalized_symbol}: no "
+                    "active lifecycle trade."
+                ),
+            }
+
+        entry_price = float(
+            trade["entry_price"]
+        )
+
+        risk_per_share = float(
+            trade["risk_per_share"]
+        )
+
+        if risk_per_share <= 0:
+            return {
+                "updated": False,
+                "reason": (
+                    f"{normalized_symbol}: invalid "
+                    "risk per share."
+                ),
+            }
+
+        current_r_multiple = (
+            float(current_price)
+            - entry_price
+        ) / risk_per_share
+
+        reached_r_level = max(
+            0,
+            floor(
+                current_r_multiple
+            ),
+        )
+
+        breakeven_activated_now = False
+        trailing_updated = False
+        previous_stop = float(
+            trade["stop_loss"]
+        )
+
+        if (
+            reached_r_level >= 1
+            and not bool(
+                trade["breakeven_activated"]
+            )
+        ):
+            trade["stop_loss"] = (
+                entry_price
+            )
+
+            trade[
+                "breakeven_activated"
+            ] = True
+
+            breakeven_activated_now = True
+
+            print(
+                f"{normalized_symbol}: stop "
+                f"moved to breakeven "
+                f"₹{entry_price:.2f}"
+            )
+
+        if reached_r_level >= 2:
+            new_stop_loss = (
+                entry_price
+                + (
+                    reached_r_level - 1
+                )
+                * risk_per_share
+            )
+
+            if new_stop_loss > float(
+                trade["stop_loss"]
+            ):
+                trade["stop_loss"] = float(
+                    new_stop_loss
+                )
+
+                trade["trailing_active"] = (
+                    True
+                )
+
                 trade[
-                    "breakeven_activated"
-                ]
+                    "highest_r_multiple"
+                ] = reached_r_level
+
+                trailing_updated = True
+
+                print(
+                    f"{normalized_symbol}: "
+                    f"trailing stop moved to "
+                    f"₹{new_stop_loss:.2f} "
+                    f"at {reached_r_level}R"
+                )
+
+        return {
+            "updated": True,
+            "current_r_multiple": round(
+                current_r_multiple,
+                4,
+            ),
+            "reached_r_level": (
+                reached_r_level
+            ),
+            "previous_stop_loss": (
+                previous_stop
+            ),
+            "stop_loss": float(
+                trade["stop_loss"]
             ),
             "breakeven_activated_now": (
                 breakeven_activated_now
             ),
-            "exit_signal": exit_signal,
+            "trailing_updated": (
+                trailing_updated
+            ),
         }
 
     def close_trade(
@@ -319,8 +460,8 @@ class TradeLifecycle:
             return {
                 "closed": False,
                 "reason": (
-                    f"{normalized_symbol}: no active "
-                    "lifecycle trade."
+                    f"{normalized_symbol}: no "
+                    "active lifecycle trade."
                 ),
             }
 
@@ -406,7 +547,10 @@ class TradeLifecycle:
 
     def get_all_open_trades(
         self,
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> Dict[
+        str,
+        Dict[str, Any],
+    ]:
         return {
             symbol: dict(
                 trade
