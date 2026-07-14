@@ -2,14 +2,14 @@ from datetime import datetime
 from math import floor
 from typing import Any, Dict, Optional
 
-from strategies.strategy_profiles import get_strategy_profile
+from strategies.regime_profiles import get_regime_profile
 
 
 class TradeLifecycle:
     """
     Manages the complete lifecycle of every trade.
 
-    Version 10 supports:
+    Version 11 supports:
     - Opening trades
     - Preventing duplicate trades
     - Updating live prices
@@ -20,6 +20,7 @@ class TradeLifecycle:
     - Maximum holding-time exit
     - Stalled-trade exit when progress stops
     - Strategy-specific lifecycle profiles
+    - Market-regime-aware profile overrides
     - Moving stop loss to breakeven at 1R
     - Configurable multi-level profit booking
     - Multiple profit targets in one price update
@@ -110,9 +111,17 @@ class TradeLifecycle:
             else {}
         )
 
+        market_condition = str(
+            trade_metadata.get(
+                "market_condition",
+                "UNKNOWN",
+            )
+        ).strip().upper()
+
         strategy_profile = (
-            get_strategy_profile(
-                strategy
+            get_regime_profile(
+                strategy=strategy,
+                regime=market_condition,
             )
         )
 
@@ -386,6 +395,9 @@ class TradeLifecycle:
             "exit_reason": None,
             "realized_pnl": 0.0,
             "unrealized_pnl": 0.0,
+            "market_condition": (
+                market_condition
+            ),
             "strategy_profile": (
                 strategy_profile
             ),
@@ -770,6 +782,11 @@ class TradeLifecycle:
                     "current_r_multiple",
                     0.0,
                 )
+            ),
+            "market_condition": str(
+                trade[
+                    "market_condition"
+                ]
             ),
             "strategy_profile": dict(
                 trade[
