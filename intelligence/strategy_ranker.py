@@ -113,6 +113,7 @@ class StrategyRanker:
         learned_rankings = [
             self._apply_historical_learning(
                 ranking=ranking,
+                regime=trend,
             )
             for ranking in rankings
         ]
@@ -127,6 +128,7 @@ class StrategyRanker:
     def _apply_historical_learning(
         self,
         ranking: Dict[str, Any],
+        regime: str,
     ) -> Dict[str, Any]:
         strategy = str(
             ranking.get(
@@ -154,6 +156,7 @@ class StrategyRanker:
             self.learning_engine
             .get_strategy_adjustment(
                 strategy=strategy,
+                regime=regime,
             )
         )
 
