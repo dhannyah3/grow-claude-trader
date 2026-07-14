@@ -7,7 +7,7 @@ class TradeLifecycle:
     """
     Manages the complete lifecycle of every trade.
 
-    Version 8 supports:
+    Version 9 supports:
     - Opening trades
     - Preventing duplicate trades
     - Updating live prices
@@ -16,6 +16,7 @@ class TradeLifecycle:
     - Tracking trade duration and last new high
     - No-momentum exit after a configurable wait
     - Maximum holding-time exit
+    - Stalled-trade exit when progress stops
     - Moving stop loss to breakeven at 1R
     - Configurable multi-level profit booking
     - Multiple profit targets in one price update
@@ -23,7 +24,7 @@ class TradeLifecycle:
     - Risk-based trailing fallback when ATR is unavailable
     - Tracking partial realized P&L
     - Detecting stop-loss, breakeven, trailing,
-      target, and time-based exits
+      target, stalled, and time-based exits
     - Closing trades
     """
 
@@ -227,8 +228,10 @@ class TradeLifecycle:
             "entry_time": now,
             "last_new_high_time": now,
             "minutes_open": 0.0,
+            "minutes_since_new_high": 0.0,
             "max_hold_minutes": 90,
             "max_wait_for_1r": 15,
+            "max_no_new_high_minutes": 20,
             "exit_time": None,
             "exit_price": None,
             "exit_reason": None,
@@ -339,6 +342,19 @@ class TradeLifecycle:
             current_price,
         )
 
+        minutes_since_new_high = (
+            now
+            - trade[
+                "last_new_high_time"
+            ]
+        ).total_seconds() / 60.0
+
+        trade[
+            "minutes_since_new_high"
+        ] = float(
+            minutes_since_new_high
+        )
+
         unrealized_pnl = (
             current_price
             - entry_price
@@ -417,6 +433,33 @@ class TradeLifecycle:
         ):
             exit_signal = (
                 "TIME_EXIT_NO_MOMENTUM"
+            )
+
+        # -------------------------
+        # Stalled-trade exit
+        # -------------------------
+
+        elif (
+            float(
+                trade[
+                    "minutes_since_new_high"
+                ]
+            )
+            >= float(
+                trade[
+                    "max_no_new_high_minutes"
+                ]
+            )
+            and current_r_multiple < 1.5
+            and float(
+                trade["minutes_open"]
+            )
+            >= float(
+                trade["max_wait_for_1r"]
+            )
+        ):
+            exit_signal = (
+                "STALLED_TRADE_EXIT"
             )
 
         else:
@@ -503,6 +546,19 @@ class TradeLifecycle:
             "last_new_high_time": (
                 trade[
                     "last_new_high_time"
+                ]
+            ),
+            "minutes_since_new_high": round(
+                float(
+                    trade[
+                        "minutes_since_new_high"
+                    ]
+                ),
+                2,
+            ),
+            "max_no_new_high_minutes": int(
+                trade[
+                    "max_no_new_high_minutes"
                 ]
             ),
             "max_hold_minutes": int(
