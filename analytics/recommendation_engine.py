@@ -1,7 +1,7 @@
 """
 Recommendation Engine
 
-Version 6.3.3
+Version 6.3.4
 
 Uses MarketLearning statistics to score,
 rank, and evaluate trading strategies.
@@ -28,7 +28,6 @@ Current version supports:
 
 Future versions will add:
 
-- Risk level
 - Strategy-regime recommendations
 - Position-size recommendations
 - Trading-workflow integration
@@ -180,6 +179,7 @@ class RecommendationEngine:
                     "INSUFFICIENT_DATA"
                 ),
                 "decision_confidence": 0.0,
+                "risk_level": "VERY_HIGH",
                 "reasons": reasons,
                 "best_strategy": None,
                 "strategies": [],
@@ -196,6 +196,12 @@ class RecommendationEngine:
             )
         )
 
+        risk_level = (
+            self._calculate_risk_level(
+                decision_confidence
+            )
+        )
+
         reasons = self._build_reasons(
             strategy_result=best_strategy,
             decision=decision,
@@ -206,6 +212,9 @@ class RecommendationEngine:
             "recommendation": decision,
             "decision_confidence": (
                 decision_confidence
+            ),
+            "risk_level": (
+                risk_level
             ),
             "reasons": reasons,
             "best_strategy": (
@@ -300,6 +309,33 @@ class RecommendationEngine:
             return "WATCH"
 
         return "SKIP"
+
+    def _calculate_risk_level(
+        self,
+        decision_confidence: float,
+    ) -> str:
+        """
+        Convert decision confidence into a
+        simple risk classification.
+        """
+        confidence = self._clamp(
+            self._to_float(
+                decision_confidence
+            ),
+            minimum=0.0,
+            maximum=100.0,
+        )
+
+        if confidence >= 90.0:
+            return "LOW"
+
+        if confidence >= 75.0:
+            return "MEDIUM"
+
+        if confidence >= 60.0:
+            return "HIGH"
+
+        return "VERY_HIGH"
 
     def _build_reasons(
         self,
@@ -910,6 +946,16 @@ if __name__ == "__main__":
 
     print(
         f"{result['decision_confidence']:.2f}%"
+    )
+
+    print(
+        "\nRISK LEVEL:"
+    )
+
+    print(
+        result[
+            "risk_level"
+        ]
     )
 
     print(
