@@ -1,7 +1,7 @@
 """
 Market Learning Engine
 
-Version 3
+Version 4
 
 This module analyzes completed trades and
 builds statistics that will eventually allow
@@ -12,6 +12,7 @@ Current version supports:
 - Loading completed trades
 - Grouping trades by strategy
 - Grouping trades by market condition
+- Grouping trades by strategy + market condition
 - Counting trades
 - Calculating win rate
 - Calculating total and average P&L
@@ -20,14 +21,14 @@ Current version supports:
 - Calculating profit factor
 - Calculating average R multiple
 - Calculating average holding time
+- Comparing strategy-regime combinations
 
 Future versions will add:
 
-- Strategy + regime statistics
 - Sample-size confidence
 - MFE and MAE analysis
 - ATR performance
-- Regime-aware learning
+- Regime-aware recommendations
 - Profile optimization
 """
 
@@ -47,33 +48,54 @@ class MarketLearning:
             List[Dict[str, Any]],
         ] = defaultdict(list)
 
+        self.strategy_market_stats: DefaultDict[
+            str,
+            List[Dict[str, Any]],
+        ] = defaultdict(list)
+
     def add_trade(
         self,
         trade: Dict[str, Any],
     ) -> None:
-        if not isinstance(trade, dict):
+        if not isinstance(
+            trade,
+            dict,
+        ):
             return
 
-        strategy = str(
+        strategy = self._normalize_text(
             trade.get(
                 "strategy",
                 "UNKNOWN",
             )
-        ).strip().upper()
+        )
 
-        market_condition = str(
+        market_condition = self._normalize_text(
             trade.get(
                 "market_condition",
                 "UNKNOWN",
             )
-        ).strip().upper()
+        )
 
-        self.strategy_stats[strategy].append(
+        strategy_market_key = (
+            f"{strategy}|"
+            f"{market_condition}"
+        )
+
+        self.strategy_stats[
+            strategy
+        ].append(
             trade
         )
 
         self.market_stats[
             market_condition
+        ].append(
+            trade
+        )
+
+        self.strategy_market_stats[
+            strategy_market_key
         ].append(
             trade
         )
@@ -86,12 +108,18 @@ class MarketLearning:
     ) -> None:
         self.strategy_stats.clear()
         self.market_stats.clear()
+        self.strategy_market_stats.clear()
 
-        if not isinstance(trades, list):
+        if not isinstance(
+            trades,
+            list,
+        ):
             return
 
         for trade in trades:
-            self.add_trade(trade)
+            self.add_trade(
+                trade
+            )
 
     def strategies(
         self,
@@ -107,13 +135,22 @@ class MarketLearning:
             self.market_stats.keys()
         )
 
+    def strategy_market_keys(
+        self,
+    ) -> List[str]:
+        return sorted(
+            self.strategy_market_stats.keys()
+        )
+
     def strategy_trade_count(
         self,
         strategy: str,
     ) -> int:
-        normalized_strategy = str(
-            strategy
-        ).strip().upper()
+        normalized_strategy = (
+            self._normalize_text(
+                strategy
+            )
+        )
 
         return len(
             self.strategy_stats.get(
@@ -126,13 +163,32 @@ class MarketLearning:
         self,
         market_condition: str,
     ) -> int:
-        normalized_market = str(
-            market_condition
-        ).strip().upper()
+        normalized_market = (
+            self._normalize_text(
+                market_condition
+            )
+        )
 
         return len(
             self.market_stats.get(
                 normalized_market,
+                [],
+            )
+        )
+
+    def strategy_market_trade_count(
+        self,
+        strategy: str,
+        market_condition: str,
+    ) -> int:
+        key = self._build_strategy_market_key(
+            strategy=strategy,
+            market_condition=market_condition,
+        )
+
+        return len(
+            self.strategy_market_stats.get(
+                key,
                 [],
             )
         )
@@ -142,17 +198,30 @@ class MarketLearning:
     ) -> Dict[str, Any]:
         return {
             "strategies": {
-                strategy: len(trades)
+                strategy: len(
+                    trades
+                )
                 for strategy, trades
                 in self.strategy_stats.items()
             },
             "markets": {
-                market: len(trades)
+                market: len(
+                    trades
+                )
                 for market, trades
                 in self.market_stats.items()
             },
+            "strategy_markets": {
+                key: len(
+                    trades
+                )
+                for key, trades
+                in self.strategy_market_stats.items()
+            },
             "total_trades": sum(
-                len(trades)
+                len(
+                    trades
+                )
                 for trades
                 in self.strategy_stats.values()
             ),
@@ -162,15 +231,176 @@ class MarketLearning:
         self,
         strategy: str,
     ) -> Dict[str, Any]:
-        normalized_strategy = str(
-            strategy
-        ).strip().upper()
+        normalized_strategy = (
+            self._normalize_text(
+                strategy
+            )
+        )
 
         trades = self.strategy_stats.get(
             normalized_strategy,
             [],
         )
 
+        if not trades:
+            return {}
+
+        statistics = self._calculate_statistics(
+            trades
+        )
+
+        statistics[
+            "strategy"
+        ] = normalized_strategy
+
+        return statistics
+
+    def market_statistics(
+        self,
+        market_condition: str,
+    ) -> Dict[str, Any]:
+        normalized_market = (
+            self._normalize_text(
+                market_condition
+            )
+        )
+
+        trades = self.market_stats.get(
+            normalized_market,
+            [],
+        )
+
+        if not trades:
+            return {}
+
+        statistics = self._calculate_statistics(
+            trades
+        )
+
+        statistics[
+            "market_condition"
+        ] = normalized_market
+
+        return statistics
+
+    def strategy_market_statistics(
+        self,
+        strategy: str,
+        market_condition: str,
+    ) -> Dict[str, Any]:
+        normalized_strategy = (
+            self._normalize_text(
+                strategy
+            )
+        )
+
+        normalized_market = (
+            self._normalize_text(
+                market_condition
+            )
+        )
+
+        key = (
+            f"{normalized_strategy}|"
+            f"{normalized_market}"
+        )
+
+        trades = self.strategy_market_stats.get(
+            key,
+            [],
+        )
+
+        if not trades:
+            return {}
+
+        statistics = self._calculate_statistics(
+            trades
+        )
+
+        statistics.update(
+            {
+                "key": key,
+                "strategy": (
+                    normalized_strategy
+                ),
+                "market_condition": (
+                    normalized_market
+                ),
+            }
+        )
+
+        return statistics
+
+    def all_strategy_statistics(
+        self,
+    ) -> Dict[
+        str,
+        Dict[str, Any],
+    ]:
+        return {
+            strategy: (
+                self.strategy_statistics(
+                    strategy
+                )
+            )
+            for strategy in (
+                self.strategies()
+            )
+        }
+
+    def all_market_statistics(
+        self,
+    ) -> Dict[
+        str,
+        Dict[str, Any],
+    ]:
+        return {
+            market: (
+                self.market_statistics(
+                    market
+                )
+            )
+            for market in (
+                self.markets()
+            )
+        }
+
+    def all_strategy_market_statistics(
+        self,
+    ) -> Dict[
+        str,
+        Dict[str, Any],
+    ]:
+        results: Dict[
+            str,
+            Dict[str, Any],
+        ] = {}
+
+        for key in self.strategy_market_keys():
+            strategy, market = (
+                key.split(
+                    "|",
+                    1,
+                )
+            )
+
+            results[
+                key
+            ] = (
+                self.strategy_market_statistics(
+                    strategy=strategy,
+                    market_condition=market,
+                )
+            )
+
+        return results
+
+    def _calculate_statistics(
+        self,
+        trades: List[
+            Dict[str, Any]
+        ],
+    ) -> Dict[str, Any]:
         if not trades:
             return {}
 
@@ -222,18 +452,33 @@ class MarketLearning:
             if pnl == 0
         ]
 
-        total_trades = len(pnl_values)
-        total_pnl = sum(pnl_values)
+        total_trades = len(
+            pnl_values
+        )
+
+        total_pnl = sum(
+            pnl_values
+        )
 
         average_pnl = (
-            total_pnl / total_trades
+            total_pnl
+            / total_trades
             if total_trades
             else 0.0
         )
 
-        average_win = self._average(wins)
-        average_loss = self._average(losses)
-        average_r = self._average(r_values)
+        average_win = self._average(
+            wins
+        )
+
+        average_loss = self._average(
+            losses
+        )
+
+        average_r = self._average(
+            r_values
+        )
+
         average_hold_minutes = (
             self._average(
                 holding_minutes
@@ -241,7 +486,9 @@ class MarketLearning:
         )
 
         win_rate = (
-            len(wins)
+            len(
+                wins
+            )
             / total_trades
             * 100
             if total_trades
@@ -249,7 +496,9 @@ class MarketLearning:
         )
 
         loss_rate = (
-            len(losses)
+            len(
+                losses
+            )
             / total_trades
             * 100
             if total_trades
@@ -257,7 +506,9 @@ class MarketLearning:
         )
 
         breakeven_rate = (
-            len(breakeven)
+            len(
+                breakeven
+            )
             / total_trades
             * 100
             if total_trades
@@ -278,9 +529,14 @@ class MarketLearning:
             * average_loss
         )
 
-        gross_profit = sum(wins)
+        gross_profit = sum(
+            wins
+        )
+
         gross_loss = abs(
-            sum(losses)
+            sum(
+                losses
+            )
         )
 
         if gross_loss == 0:
@@ -289,6 +545,7 @@ class MarketLearning:
                 if gross_profit > 0
                 else 0.0
             )
+
         else:
             profit_factor = (
                 gross_profit
@@ -296,12 +553,15 @@ class MarketLearning:
             )
 
         return {
-            "strategy": (
-                normalized_strategy
+            "trades": (
+                total_trades
             ),
-            "trades": total_trades,
-            "wins": len(wins),
-            "losses": len(losses),
+            "wins": len(
+                wins
+            ),
+            "losses": len(
+                losses
+            ),
             "breakeven": len(
                 breakeven
             ),
@@ -366,22 +626,43 @@ class MarketLearning:
             ),
         }
 
-    def all_strategy_statistics(
-        self,
-    ) -> Dict[
-        str,
-        Dict[str, Any],
-    ]:
-        return {
-            strategy: (
-                self.strategy_statistics(
-                    strategy
-                )
+    @staticmethod
+    def _build_strategy_market_key(
+        strategy: str,
+        market_condition: str,
+    ) -> str:
+        normalized_strategy = (
+            MarketLearning._normalize_text(
+                strategy
             )
-            for strategy in (
-                self.strategies()
+        )
+
+        normalized_market = (
+            MarketLearning._normalize_text(
+                market_condition
             )
-        }
+        )
+
+        return (
+            f"{normalized_strategy}|"
+            f"{normalized_market}"
+        )
+
+    @staticmethod
+    def _normalize_text(
+        value: Any,
+    ) -> str:
+        normalized = str(
+            value
+            if value is not None
+            else "UNKNOWN"
+        ).strip().upper()
+
+        return (
+            normalized
+            if normalized
+            else "UNKNOWN"
+        )
 
     @staticmethod
     def _average(
@@ -390,14 +671,21 @@ class MarketLearning:
         if not values:
             return 0.0
 
-        return sum(values) / len(values)
+        return sum(
+            values
+        ) / len(
+            values
+        )
 
     @staticmethod
     def _to_float(
         value: Any,
     ) -> float:
         try:
-            return float(value)
+            return float(
+                value
+            )
+
         except (
             TypeError,
             ValueError,
@@ -434,6 +722,17 @@ if __name__ == "__main__":
             },
             {
                 "strategy": (
+                    "ORB_BREAKOUT"
+                ),
+                "market_condition": (
+                    "RANGE_BOUND"
+                ),
+                "pnl": -150,
+                "r_multiple": -1.0,
+                "holding_minutes": 24,
+            },
+            {
+                "strategy": (
                     "VWAP_PULLBACK"
                 ),
                 "market_condition": (
@@ -446,33 +745,49 @@ if __name__ == "__main__":
         ]
     )
 
-    print("\nSUMMARY:")
-    print(learner.summary())
+    print(
+        "\nSUMMARY:"
+    )
 
-    print("\nSTRATEGIES:")
-    print(learner.strategies())
+    print(
+        learner.summary()
+    )
 
-    print("\nMARKETS:")
-    print(learner.markets())
+    print(
+        "\nORB STATISTICS:"
+    )
 
-    print("\nORB STATISTICS:")
     print(
         learner.strategy_statistics(
             "ORB_BREAKOUT"
         )
     )
 
-    print("\nVWAP STATISTICS:")
     print(
-        learner.strategy_statistics(
-            "VWAP_PULLBACK"
+        "\nTRENDING MARKET STATISTICS:"
+    )
+
+    print(
+        learner.market_statistics(
+            "TRENDING"
         )
     )
 
     print(
-        "\nALL STRATEGY STATISTICS:"
+        "\nORB + TRENDING:"
     )
 
     print(
-        learner.all_strategy_statistics()
+        learner.strategy_market_statistics(
+            strategy="ORB_BREAKOUT",
+            market_condition="TRENDING",
+        )
+    )
+
+    print(
+        "\nALL STRATEGY + MARKET STATISTICS:"
+    )
+
+    print(
+        learner.all_strategy_market_statistics()
     )
