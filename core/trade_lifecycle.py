@@ -7,15 +7,17 @@ class TradeLifecycle:
     """
     Manages the complete lifecycle of every trade.
 
-    Version 4 supports:
+    Version 6 supports:
     - Opening trades
     - Preventing duplicate trades
     - Updating live prices
     - Calculating unrealized P&L
     - Tracking highest and lowest prices
     - Moving stop loss to breakeven at 1R
-    - Signaling a one-time 50% partial exit at 2R
-    - Risk-based trailing stops from 2R onward
+    - Configurable multi-level profit booking
+    - Multiple profit targets in one price update
+    - ATR-based trailing stops from 2R onward
+    - Risk-based trailing fallback when ATR is unavailable
     - Tracking partial realized P&L
     - Detecting stop-loss, breakeven, trailing,
       and target exits
@@ -92,6 +94,59 @@ class TradeLifecycle:
             - stop_loss
         )
 
+        trade_metadata = (
+            metadata
+            if isinstance(
+                metadata,
+                dict,
+            )
+            else {}
+        )
+
+        indicators = trade_metadata.get(
+            "indicators",
+            {},
+        )
+
+        if not isinstance(
+            indicators,
+            dict,
+        ):
+            indicators = {}
+
+        try:
+            atr = float(
+                indicators.get(
+                    "atr",
+                    0.0,
+                )
+                or 0.0
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            atr = 0.0
+
+        try:
+            atr_multiplier = float(
+                trade_metadata.get(
+                    "atr_multiplier",
+                    2.0,
+                )
+                or 2.0
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            atr_multiplier = 2.0
+
+        if atr_multiplier <= 0:
+            atr_multiplier = 2.0
+
         trade = {
             "symbol": normalized_symbol,
             "strategy": str(
@@ -115,6 +170,15 @@ class TradeLifecycle:
             "risk_per_share": (
                 risk_per_share
             ),
+            "atr": atr,
+            "atr_multiplier": (
+                atr_multiplier
+            ),
+            "trailing_mode": (
+                "ATR"
+                if atr > 0
+                else "R_MULTIPLE"
+            ),
             "highest_price": entry_price,
             "lowest_price": entry_price,
             "highest_r_multiple": 0,
@@ -124,12 +188,36 @@ class TradeLifecycle:
             ),
             "breakeven_activated": False,
             "trailing_active": False,
-            "partial_exit_r": 2,
-            "partial_exit_fraction": 0.5,
-            "partial_exit_done": False,
-            "partial_exit_quantity": 0,
-            "partial_exit_price": None,
-            "partial_exit_time": None,
+            "profit_targets": [
+                {
+                    "r": 2,
+                    "fraction": 0.25,
+                    "completed": False,
+                    "quantity": 0,
+                    "exit_price": None,
+                    "exit_time": None,
+                    "realized_pnl": 0.0,
+                },
+                {
+                    "r": 3,
+                    "fraction": 0.25,
+                    "completed": False,
+                    "quantity": 0,
+                    "exit_price": None,
+                    "exit_time": None,
+                    "realized_pnl": 0.0,
+                },
+                {
+                    "r": 4,
+                    "fraction": 0.25,
+                    "completed": False,
+                    "quantity": 0,
+                    "exit_price": None,
+                    "exit_time": None,
+                    "realized_pnl": 0.0,
+                },
+            ],
+            "completed_profit_targets": 0,
             "partial_realized_pnl": 0.0,
             "entry_time": datetime.now(),
             "exit_time": None,
@@ -137,7 +225,7 @@ class TradeLifecycle:
             "exit_reason": None,
             "realized_pnl": 0.0,
             "unrealized_pnl": 0.0,
-            "metadata": metadata or {},
+            "metadata": trade_metadata,
         }
 
         self.active_trades[
@@ -243,8 +331,8 @@ class TradeLifecycle:
             )
         )
 
-        partial_exit = (
-            self.check_partial_exit(
+        partial_exits = (
+            self.check_profit_targets(
                 symbol=normalized_symbol,
                 current_price=current_price,
             )
@@ -309,6 +397,15 @@ class TradeLifecycle:
             "risk_per_share": float(
                 trade["risk_per_share"]
             ),
+            "atr": float(
+                trade["atr"]
+            ),
+            "atr_multiplier": float(
+                trade["atr_multiplier"]
+            ),
+            "trailing_mode": str(
+                trade["trailing_mode"]
+            ),
             "breakeven_trigger": float(
                 trade["breakeven_trigger"]
             ),
@@ -345,19 +442,29 @@ class TradeLifecycle:
             "remaining_quantity": int(
                 trade["remaining_quantity"]
             ),
-            "partial_exit_done": bool(
-                trade["partial_exit_done"]
+            "completed_profit_targets": int(
+                trade[
+                    "completed_profit_targets"
+                ]
             ),
+            "profit_targets": [
+                dict(
+                    target
+                )
+                for target in trade[
+                    "profit_targets"
+                ]
+            ],
             "partial_realized_pnl": float(
                 trade["partial_realized_pnl"]
             ),
-            "partial_exit": (
-                partial_exit
+            "partial_exits": (
+                partial_exits
             ),
             "exit_signal": exit_signal,
         }
 
-    def check_partial_exit(
+    def check_profit_targets(
         self,
         symbol: str,
         current_price: float,
@@ -373,157 +480,243 @@ class TradeLifecycle:
         if trade is None:
             return {
                 "execute": False,
+                "orders": [],
                 "reason": (
                     f"{normalized_symbol}: no "
                     "active lifecycle trade."
                 ),
             }
 
-        if bool(
-            trade["partial_exit_done"]
-        ):
-            return {
-                "execute": False,
-                "reason": (
-                    "Partial exit already completed."
-                ),
-            }
-
-        risk_per_share = float(
-            trade["risk_per_share"]
+        current_price = float(
+            current_price
         )
 
         entry_price = float(
             trade["entry_price"]
         )
 
-        partial_exit_r = int(
-            trade["partial_exit_r"]
+        risk_per_share = float(
+            trade["risk_per_share"]
         )
 
-        trigger_price = (
-            entry_price
-            + (
-                partial_exit_r
-                * risk_per_share
-            )
-        )
-
-        if float(
-            current_price
-        ) < trigger_price:
+        if risk_per_share <= 0:
             return {
                 "execute": False,
-                "trigger_price": round(
-                    trigger_price,
+                "orders": [],
+                "reason": (
+                    f"{normalized_symbol}: invalid "
+                    "risk per share."
+                ),
+            }
+
+        orders = []
+
+        profit_targets = trade.get(
+            "profit_targets",
+            [],
+        )
+
+        if not isinstance(
+            profit_targets,
+            list,
+        ):
+            profit_targets = []
+
+        for target in profit_targets:
+            if bool(
+                target.get(
+                    "completed",
+                    False,
+                )
+            ):
+                continue
+
+            target_r = int(
+                target.get(
+                    "r",
+                    0,
+                )
+                or 0
+            )
+
+            fraction = float(
+                target.get(
+                    "fraction",
+                    0.0,
+                )
+                or 0.0
+            )
+
+            trigger_price = (
+                entry_price
+                + (
+                    target_r
+                    * risk_per_share
+                )
+            )
+
+            if (
+                target_r <= 0
+                or fraction <= 0
+                or current_price
+                < trigger_price
+            ):
+                continue
+
+            remaining_quantity = int(
+                trade[
+                    "remaining_quantity"
+                ]
+            )
+
+            if remaining_quantity <= 1:
+                break
+
+            target_quantity = max(
+                1,
+                int(
+                    int(
+                        trade[
+                            "initial_quantity"
+                        ]
+                    )
+                    * fraction
+                ),
+            )
+
+            quantity = min(
+                target_quantity,
+                remaining_quantity - 1,
+            )
+
+            if quantity <= 0:
+                continue
+
+            realized_pnl = (
+                current_price
+                - entry_price
+            ) * quantity
+
+            target[
+                "completed"
+            ] = True
+
+            target[
+                "quantity"
+            ] = quantity
+
+            target[
+                "exit_price"
+            ] = current_price
+
+            target[
+                "exit_time"
+            ] = datetime.now()
+
+            target[
+                "realized_pnl"
+            ] = float(
+                realized_pnl
+            )
+
+            trade[
+                "remaining_quantity"
+            ] = (
+                remaining_quantity
+                - quantity
+            )
+
+            trade["quantity"] = int(
+                trade[
+                    "remaining_quantity"
+                ]
+            )
+
+            trade[
+                "partial_realized_pnl"
+            ] = float(
+                trade.get(
+                    "partial_realized_pnl",
+                    0.0,
+                )
+                or 0.0
+            ) + realized_pnl
+
+            trade[
+                "completed_profit_targets"
+            ] = int(
+                trade.get(
+                    "completed_profit_targets",
+                    0,
+                )
+                or 0
+            ) + 1
+
+            order = {
+                "execute": True,
+                "symbol": (
+                    normalized_symbol
+                ),
+                "target_r": (
+                    target_r
+                ),
+                "quantity": (
+                    quantity
+                ),
+                "remaining_quantity": int(
+                    trade[
+                        "remaining_quantity"
+                    ]
+                ),
+                "exit_price": (
+                    current_price
+                ),
+                "partial_pnl": round(
+                    realized_pnl,
                     2,
                 ),
-            }
-
-        remaining_quantity = int(
-            trade["remaining_quantity"]
-        )
-
-        partial_quantity = max(
-            1,
-            int(
-                remaining_quantity
-                * float(
-                    trade[
-                        "partial_exit_fraction"
-                    ]
-                )
-            ),
-        )
-
-        if partial_quantity >= (
-            remaining_quantity
-        ):
-            return {
-                "execute": False,
                 "reason": (
-                    "Position is too small for "
-                    "a partial exit."
+                    f"PARTIAL_TARGET_"
+                    f"{target_r}R"
                 ),
             }
 
-        partial_pnl = (
-            float(current_price)
-            - entry_price
-        ) * partial_quantity
+            orders.append(
+                order
+            )
 
-        trade[
-            "partial_exit_done"
-        ] = True
-
-        trade[
-            "partial_exit_quantity"
-        ] = partial_quantity
-
-        trade[
-            "partial_exit_price"
-        ] = float(
-            current_price
-        )
-
-        trade[
-            "partial_exit_time"
-        ] = datetime.now()
-
-        trade[
-            "partial_realized_pnl"
-        ] = float(
-            partial_pnl
-        )
-
-        trade[
-            "remaining_quantity"
-        ] = (
-            remaining_quantity
-            - partial_quantity
-        )
-
-        trade["quantity"] = int(
-            trade["remaining_quantity"]
-        )
+            print(
+                f"{normalized_symbol}: "
+                f"{target_r}R profit target "
+                f"signal | Qty: {quantity} | "
+                f"Remaining: "
+                f"{trade['remaining_quantity']} | "
+                f"Price: ₹{current_price:.2f}"
+            )
 
         trade["unrealized_pnl"] = (
-            float(current_price)
+            current_price
             - entry_price
         ) * int(
-            trade["remaining_quantity"]
-        )
-
-        print(
-            f"{normalized_symbol}: partial "
-            f"exit signal | Qty: "
-            f"{partial_quantity} | "
-            f"Remaining: "
-            f"{trade['remaining_quantity']} | "
-            f"Price: ₹{current_price:.2f}"
+            trade[
+                "remaining_quantity"
+            ]
         )
 
         return {
-            "execute": True,
-            "symbol": normalized_symbol,
-            "quantity": (
-                partial_quantity
+            "execute": bool(
+                orders
+            ),
+            "orders": orders,
+            "completed_targets": int(
+                trade[
+                    "completed_profit_targets"
+                ]
             ),
             "remaining_quantity": int(
                 trade[
                     "remaining_quantity"
                 ]
-            ),
-            "exit_price": float(
-                current_price
-            ),
-            "partial_pnl": round(
-                partial_pnl,
-                2,
-            ),
-            "reason": (
-                f"PARTIAL_TARGET_"
-                f"{partial_exit_r}R"
             ),
         }
 
@@ -566,8 +759,12 @@ class TradeLifecycle:
                 ),
             }
 
+        current_price = float(
+            current_price
+        )
+
         current_r_multiple = (
-            float(current_price)
+            current_price
             - entry_price
         ) / risk_per_share
 
@@ -580,6 +777,7 @@ class TradeLifecycle:
 
         breakeven_activated_now = False
         trailing_updated = False
+
         previous_stop = float(
             trade["stop_loss"]
         )
@@ -606,20 +804,70 @@ class TradeLifecycle:
                 f"₹{entry_price:.2f}"
             )
 
-        if reached_r_level >= 2:
-            new_stop_loss = (
-                entry_price
-                + (
-                    reached_r_level - 1
-                )
-                * risk_per_share
+        atr = float(
+            trade.get(
+                "atr",
+                0.0,
             )
+            or 0.0
+        )
 
-            if new_stop_loss > float(
+        atr_multiplier = float(
+            trade.get(
+                "atr_multiplier",
+                2.0,
+            )
+            or 2.0
+        )
+
+        trailing_mode = (
+            "ATR"
+            if atr > 0
+            else "R_MULTIPLE"
+        )
+
+        trade["trailing_mode"] = (
+            trailing_mode
+        )
+
+        proposed_stop = float(
+            trade["stop_loss"]
+        )
+
+        if reached_r_level >= 2:
+            if trailing_mode == "ATR":
+                proposed_stop = (
+                    float(
+                        trade[
+                            "highest_price"
+                        ]
+                    )
+                    - (
+                        atr
+                        * atr_multiplier
+                    )
+                )
+
+                proposed_stop = max(
+                    proposed_stop,
+                    entry_price,
+                )
+
+            else:
+                proposed_stop = (
+                    entry_price
+                    + (
+                        reached_r_level
+                        - 1
+                    )
+                    * risk_per_share
+                )
+
+            if proposed_stop > float(
                 trade["stop_loss"]
             ):
                 trade["stop_loss"] = float(
-                    new_stop_loss
+                    proposed_stop
                 )
 
                 trade["trailing_active"] = (
@@ -628,15 +876,23 @@ class TradeLifecycle:
 
                 trade[
                     "highest_r_multiple"
-                ] = reached_r_level
+                ] = max(
+                    int(
+                        trade[
+                            "highest_r_multiple"
+                        ]
+                    ),
+                    reached_r_level,
+                )
 
                 trailing_updated = True
 
                 print(
                     f"{normalized_symbol}: "
-                    f"trailing stop moved to "
-                    f"₹{new_stop_loss:.2f} "
-                    f"at {reached_r_level}R"
+                    f"{trailing_mode} trailing "
+                    f"stop moved to "
+                    f"₹{proposed_stop:.2f} "
+                    f"at {current_r_multiple:.2f}R"
                 )
 
         return {
@@ -659,6 +915,13 @@ class TradeLifecycle:
             ),
             "trailing_updated": (
                 trailing_updated
+            ),
+            "trailing_mode": (
+                trailing_mode
+            ),
+            "atr": atr,
+            "atr_multiplier": (
+                atr_multiplier
             ),
         }
 

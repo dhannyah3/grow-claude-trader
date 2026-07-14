@@ -1002,19 +1002,57 @@ def open_paper_trades(
                 entry_price=entry_price,
                 stop_loss=stop_loss,
                 target=target_price,
+
                 metadata={
+                    "strategy": (
+                        selected_strategy
+                    ),
                     "market_condition": (
                         market_condition
                     ),
-                    "market_regime": regime_data,
+                    "market_regime": (
+                        regime_data
+                    ),
                     "market_intelligence": (
                         intelligence
                     ),
-                    "market_brain": brain_decision,
+                    "market_brain": (
+                        brain_decision
+                    ),
                     "claude_review": {
                         "approved": approved,
                         "confidence": confidence,
                         "reason": claude_reason,
+                    },
+                    "indicators": {
+                        "rsi": result.get(
+                            "rsi"
+                        ),
+                        "atr": result.get(
+                            "atr"
+                        ),
+                        "ema_20": result.get(
+                            "ema_20"
+                        ),
+                        "ema_50": result.get(
+                            "ema_50"
+                        ),
+                        "vwap": result.get(
+                            "vwap"
+                        ),
+                        "macd": result.get(
+                            "macd"
+                        ),
+                        "macd_signal": (
+                            result.get(
+                                "macd_signal"
+                            )
+                        ),
+                        "opening_high": (
+                            result.get(
+                                "opening_high"
+                            )
+                        ),
                     },
                 },
             )
@@ -1148,43 +1186,107 @@ def monitor_positions(
             )
 
         # -------------------------
-        # Execute partial exit
+        # Execute profit targets
         # -------------------------
 
-        partial_exit = (
+        partial_exits = (
             lifecycle_update.get(
-                "partial_exit",
+                "partial_exits",
                 {},
             )
         )
 
-        if (
-            isinstance(
-                partial_exit,
-                dict,
+        partial_orders = []
+
+        if isinstance(
+            partial_exits,
+            dict,
+        ):
+            orders_value = (
+                partial_exits.get(
+                    "orders",
+                    [],
+                )
             )
-            and partial_exit.get(
+
+            if isinstance(
+                orders_value,
+                list,
+            ):
+                partial_orders = (
+                    orders_value
+                )
+
+        for partial_order in partial_orders:
+            if not isinstance(
+                partial_order,
+                dict,
+            ):
+                continue
+
+            if not partial_order.get(
                 "execute",
                 False,
+            ):
+                continue
+
+            partial_quantity = int(
+                partial_order.get(
+                    "quantity",
+                    0,
+                )
+                or 0
             )
-        ):
+
+            if partial_quantity <= 0:
+                print(
+                    f"{symbol}: invalid partial "
+                    "exit quantity."
+                )
+                continue
+
+            paper_position = (
+                trader.get_open_position(
+                    symbol
+                )
+            )
+
+            if paper_position is None:
+                print(
+                    f"{symbol}: paper position "
+                    "was unavailable during "
+                    "partial exit."
+                )
+                break
+
+            current_paper_quantity = int(
+                paper_position[
+                    "quantity"
+                ]
+            )
+
+            if partial_quantity >= (
+                current_paper_quantity
+            ):
+                print(
+                    f"{symbol}: partial exit "
+                    "would close the complete "
+                    "position. Skipping."
+                )
+                continue
+
             partial_result = (
                 trader.partial_close_trade(
                     symbol=symbol,
                     exit_price=float(
-                        partial_exit.get(
+                        partial_order.get(
                             "exit_price",
                             current_price,
                         )
                     ),
-                    quantity=int(
-                        partial_exit.get(
-                            "quantity",
-                            0,
-                        )
-                    ),
+                    quantity=partial_quantity,
                     exit_reason=str(
-                        partial_exit.get(
+                        partial_order.get(
                             "reason",
                             "PARTIAL_TARGET",
                         )
@@ -1197,27 +1299,53 @@ def monitor_positions(
                     f"{symbol}: partial exit "
                     "execution failed."
                 )
+                break
 
-            else:
-                print(
-                    f"{symbol}: partial profit "
-                    f"booked | Qty: "
-                    f"{partial_result['quantity']} | "
-                    f"Remaining: "
-                    f"{partial_result['remaining_quantity']} | "
-                    f"Partial P&L: ₹"
-                    f"{partial_result['partial_pnl']:.2f}"
-                )
+            print(
+                f"{symbol}: "
+                f"{partial_order.get('target_r', '?')}R "
+                f"profit booked | "
+                f"Qty: "
+                f"{partial_result['quantity']} | "
+                f"Remaining: "
+                f"{partial_result['remaining_quantity']} | "
+                f"Partial P&L: ₹"
+                f"{partial_result['partial_pnl']:.2f}"
+            )
+
+        # -------------------------
+        # Display live position
+        # -------------------------
+
+        paper_position = (
+            trader.get_open_position(
+                symbol
+            )
+        )
+
+        paper_quantity = (
+            int(
+                paper_position[
+                    "quantity"
+                ]
+            )
+            if paper_position is not None
+            else 0
+        )
 
         print(
             f"{symbol} | "
             f"Current: ₹{current_price:.2f} | "
             f"Remaining Qty: "
-            f"{lifecycle_update.get('remaining_quantity', 0)} | "
+            f"{paper_quantity} | "
             f"Unrealized P&L: ₹"
             f"{lifecycle_update.get('unrealized_pnl', 0.0):.2f} | "
             f"Partial P&L: ₹"
             f"{lifecycle_update.get('partial_realized_pnl', 0.0):.2f} | "
+            f"Targets Completed: "
+            f"{lifecycle_update.get('completed_profit_targets', 0)} | "
+            f"Trailing: "
+            f"{lifecycle_update.get('trailing_mode', 'UNKNOWN')} | "
             f"Stop: ₹{lifecycle_stop:.2f}"
         )
 
