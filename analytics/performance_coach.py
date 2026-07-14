@@ -53,7 +53,9 @@ class PerformanceCoach:
                 "market_condition_performance": {},
                 "strategy_regime_performance": {},
                 "volatility_performance": {},
+                "strategy_volatility_performance": {},
                 "gap_performance": {},
+                "strategy_gap_performance": {},
                 "market_quality_performance": {},
                 "brain_confidence_performance": {},
                 "best_strategy": None,
@@ -68,7 +70,11 @@ class PerformanceCoach:
         market_stats = self._create_stats_group()
         strategy_regime_stats = self._create_stats_group()
         volatility_stats = self._create_stats_group()
+        strategy_volatility_stats = (
+            self._create_stats_group()
+        )
         gap_stats = self._create_stats_group()
+        strategy_gap_stats = self._create_stats_group()
         market_quality_stats = self._create_stats_group()
         brain_confidence_stats = (
             self._create_stats_group()
@@ -95,7 +101,7 @@ class PerformanceCoach:
                     "strategy",
                     "UNKNOWN",
                 )
-            )
+            ).upper()
 
             market_condition = str(
                 entry.get(
@@ -103,11 +109,6 @@ class PerformanceCoach:
                     "UNKNOWN",
                 )
             ).upper()
-
-            strategy_regime_key = (
-                f"{strategy}|"
-                f"{market_condition}"
-            )
 
             claude_data = entry.get(
                 "claude",
@@ -144,6 +145,21 @@ class PerformanceCoach:
                     "UNKNOWN",
                 )
             ).upper()
+
+            strategy_regime_key = (
+                f"{strategy}|"
+                f"{market_condition}"
+            )
+
+            strategy_volatility_key = (
+                f"{strategy}|"
+                f"{volatility}"
+            )
+
+            strategy_gap_key = (
+                f"{strategy}|"
+                f"{gap}"
+            )
 
             confidence = int(
                 claude_data.get(
@@ -240,8 +256,24 @@ class PerformanceCoach:
             )
 
             self._update_group(
+                strategy_volatility_stats[
+                    strategy_volatility_key
+                ],
+                result,
+                pnl,
+            )
+
+            self._update_group(
                 gap_stats[
                     gap
+                ],
+                result,
+                pnl,
+            )
+
+            self._update_group(
+                strategy_gap_stats[
+                    strategy_gap_key
                 ],
                 result,
                 pnl,
@@ -293,9 +325,21 @@ class PerformanceCoach:
             )
         )
 
+        strategy_volatility_performance = (
+            self._finalize_groups(
+                strategy_volatility_stats
+            )
+        )
+
         gap_performance = (
             self._finalize_groups(
                 gap_stats
+            )
+        )
+
+        strategy_gap_performance = (
+            self._finalize_groups(
+                strategy_gap_stats
             )
         )
 
@@ -344,8 +388,14 @@ class PerformanceCoach:
             "volatility_performance": (
                 volatility_performance
             ),
+            "strategy_volatility_performance": (
+                strategy_volatility_performance
+            ),
             "gap_performance": (
                 gap_performance
+            ),
+            "strategy_gap_performance": (
+                strategy_gap_performance
             ),
             "market_quality_performance": (
                 market_quality_performance
@@ -681,10 +731,24 @@ if __name__ == "__main__":
         ]
     )
 
+    print("\nStrategy + Volatility Performance:")
+    print(
+        report[
+            "strategy_volatility_performance"
+        ]
+    )
+
     print("\nGap Performance:")
     print(
         report[
             "gap_performance"
+        ]
+    )
+
+    print("\nStrategy + Gap Performance:")
+    print(
+        report[
+            "strategy_gap_performance"
         ]
     )
 
