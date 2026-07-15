@@ -70,3 +70,7 @@ dist/
 # Log Files
 # ==========================================
 *.log
+
+# Historical research datasets
+data/historical/*
+!data/historical/.gitkeep
