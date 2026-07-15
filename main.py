@@ -882,6 +882,7 @@ def open_paper_trades(
     dynamic_position_sizer: DynamicPositionSizer,
     portfolio_heat_manager: PortfolioHeatManager,
     live_execution_controller: LiveExecutionController,
+    safety_manager: SafetyManager,
 ) -> None:
     """
     Open paper trades from already analyzed scanner results.
@@ -899,6 +900,25 @@ def open_paper_trades(
         return
 
     for result in scan_results:
+        safety_decision = (
+            safety_manager.can_open_trade(
+                current_daily_pnl=(
+                    trader.total_realized_pnl()
+                )
+            )
+        )
+
+        if not safety_decision.get(
+            "allowed",
+            False,
+        ):
+            print(
+                "Safety Manager blocked "
+                f"new trades: "
+                f"{safety_decision.get('reason', 'Unknown reason')}"
+            )
+            break
+
         if result.get("action") != "BUY":
             continue
 
@@ -1738,6 +1758,8 @@ def open_paper_trades(
             )
             continue
 
+        safety_manager.record_trade_opened()
+
         print(
             f"{symbol} paper trade opened | "
             f"Strategy: {selected_strategy} | "
@@ -1769,6 +1791,7 @@ def monitor_positions(
     trader: PaperTrader,
     lifecycle: TradeLifecycle,
     live_execution_controller: LiveExecutionController,
+    safety_manager: SafetyManager,
 ) -> None:
     symbols = list(
         trader.open_positions.keys()
@@ -2036,6 +2059,16 @@ def monitor_positions(
             )
             continue
 
+        safety_manager.record_trade_closed(
+            pnl=float(
+                closed_trade.get(
+                    "pnl",
+                    0.0,
+                )
+                or 0.0
+            )
+        )
+
         if lifecycle.has_open_trade(
             symbol
         ):
@@ -2069,6 +2102,7 @@ def close_all_positions(
     trader: PaperTrader,
     lifecycle: TradeLifecycle,
     live_execution_controller: LiveExecutionController,
+    safety_manager: SafetyManager,
     reason: str,
 ) -> None:
     symbols = list(
@@ -2146,6 +2180,17 @@ def close_all_positions(
             exit_price=exit_price,
             exit_reason=reason,
         )
+
+        if closed_trade is not None:
+            safety_manager.record_trade_closed(
+                pnl=float(
+                    closed_trade.get(
+                        "pnl",
+                        0.0,
+                    )
+                    or 0.0
+                )
+            )
 
         if (
             closed_trade is not None
@@ -2504,6 +2549,50 @@ def main() -> None:
 
     while True:
         current_time = now_in_india()
+
+        shutdown_decision = (
+            safety_manager.should_shutdown(
+                current_daily_pnl=(
+                    trader.total_realized_pnl()
+                )
+            )
+        )
+
+        if shutdown_decision.get(
+            "shutdown",
+            False,
+        ):
+            shutdown_reason = str(
+                shutdown_decision.get(
+                    "reason",
+                    "Safety shutdown.",
+                )
+            )
+
+            print(
+                "SAFETY SHUTDOWN: "
+                f"{shutdown_reason}"
+            )
+
+            close_all_positions(
+                market=market,
+                trader=trader,
+                lifecycle=lifecycle,
+                live_execution_controller=(
+                    live_execution_controller
+                ),
+                safety_manager=(
+                    safety_manager
+                ),
+                reason="SAFETY_SHUTDOWN",
+            )
+
+            print(
+                "Bot stopped by "
+                "SafetyManager."
+            )
+            break
+
         status = market_status(
             current_time
         )
@@ -2529,6 +2618,9 @@ def main() -> None:
                 live_execution_controller=(
                     live_execution_controller
                 ),
+                safety_manager=(
+                    safety_manager
+                ),
                 reason="DAY_END_EXIT",
             )
 
@@ -2544,6 +2636,9 @@ def main() -> None:
             lifecycle=lifecycle,
             live_execution_controller=(
                 live_execution_controller
+            ),
+            safety_manager=(
+                safety_manager
             ),
         )
 
@@ -2634,6 +2729,9 @@ def main() -> None:
                 ),
                 live_execution_controller=(
                     live_execution_controller
+                ),
+                safety_manager=(
+                    safety_manager
                 ),
             )
 
