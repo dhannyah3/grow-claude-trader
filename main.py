@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
+from execution.sell_execution import (
+    execute_paper_sell,
+)
 
 from analytics.adaptive_filter import AdaptiveTradeFilter
 from analytics.market_learning import MarketLearning
@@ -1763,6 +1766,7 @@ def monitor_positions(
     market: MarketData,
     trader: PaperTrader,
     lifecycle: TradeLifecycle,
+    live_execution_controller: LiveExecutionController,
 ) -> None:
     symbols = list(
         trader.open_positions.keys()
@@ -1861,27 +1865,56 @@ def monitor_positions(
                 False,
             )
         ):
+            partial_quantity = int(
+                partial_exit.get(
+                    "quantity",
+                    0,
+                )
+            )
+
+            partial_price = float(
+                partial_exit.get(
+                    "exit_price",
+                    current_price,
+                )
+            )
+
+            partial_reason = str(
+                partial_exit.get(
+                    "reason",
+                    "PARTIAL_TARGET",
+                )
+            )
+
+            sell_result = execute_paper_sell(
+                controller=(
+                    live_execution_controller
+                ),
+                symbol=symbol,
+                quantity=partial_quantity,
+                price=partial_price,
+                reason=partial_reason,
+                metadata={
+                    "partial_exit": True,
+                },
+            )
+
+            if not sell_result.get(
+                "success",
+                False,
+            ):
+                print(
+                    f"{symbol}: partial SELL "
+                    "execution registration failed."
+                )
+                continue
+
             partial_result = (
                 trader.partial_close_trade(
                     symbol=symbol,
-                    exit_price=float(
-                        partial_exit.get(
-                            "exit_price",
-                            current_price,
-                        )
-                    ),
-                    quantity=int(
-                        partial_exit.get(
-                            "quantity",
-                            0,
-                        )
-                    ),
-                    exit_reason=str(
-                        partial_exit.get(
-                            "reason",
-                            "PARTIAL_TARGET",
-                        )
-                    ),
+                    exit_price=partial_price,
+                    quantity=partial_quantity,
+                    exit_reason=partial_reason,
                 )
             )
 
@@ -1918,38 +1951,168 @@ def monitor_positions(
         # Check complete exit
         # -------------------------
 
-        trader.check_exit(
-            symbol=symbol,
-            current_price=current_price,
-        )
-
-        if (
+        paper_position = (
             trader.get_open_position(
                 symbol
             )
-            is None
-            and lifecycle.has_open_trade(
-                symbol
-            )
-        ):
-            exit_signal = (
-                lifecycle_update.get(
-                    "exit_signal"
-                )
-                or "PAPER_TRADER_EXIT"
-            )
+        )
 
+        if paper_position is None:
+            continue
+
+        exit_signal = str(
+            lifecycle_update.get(
+                "exit_signal",
+                "",
+            )
+            or ""
+        ).strip().upper()
+
+        if not exit_signal:
+            if current_price <= float(
+                paper_position["stop_loss"]
+            ):
+                exit_signal = "STOP_LOSS"
+
+            elif current_price >= float(
+                paper_position["target"]
+            ):
+                exit_signal = "TARGET"
+
+        if not exit_signal:
+            continue
+
+        remaining_quantity = int(
+            paper_position.get(
+                "quantity",
+                0,
+            )
+            or 0
+        )
+
+        if remaining_quantity <= 0:
+            print(
+                f"{symbol}: invalid remaining "
+                "quantity for full exit."
+            )
+            continue
+
+        sell_result = execute_paper_sell(
+            controller=(
+                live_execution_controller
+            ),
+            symbol=symbol,
+            quantity=remaining_quantity,
+            price=current_price,
+            reason=exit_signal,
+            metadata={
+                "partial_exit": False,
+                "full_exit": True,
+            },
+        )
+
+        if not sell_result.get(
+            "success",
+            False,
+        ):
+            print(
+                f"{symbol}: full SELL execution "
+                "registration failed."
+            )
+            continue
+
+        position = trader.get_open_position(
+            symbol
+        )
+
+        if position is None:
+            continue
+
+        quantity = int(
+            position.get(
+                "quantity",
+                0,
+            )
+            or 0
+        )
+
+        if quantity <= 0:
+            print(
+                f"{symbol}: invalid quantity "
+                "for day-end exit."
+            )
+            continue
+
+        sell_result = execute_paper_sell(
+            controller=(
+                live_execution_controller
+            ),
+            symbol=symbol,
+            quantity=quantity,
+            price=exit_price,
+            reason=reason,
+            metadata={
+                "full_exit": True,
+                "day_end_exit": True,
+            },
+        )
+
+        if not sell_result.get(
+            "success",
+            False,
+        ):
+            print(
+                f"{symbol}: day-end SELL "
+                "registration failed."
+            )
+            continue
+
+        closed_trade = trader.close_trade(
+            symbol=symbol,
+            exit_price=exit_price,
+            exit_reason=reason,
+        )
+
+        if closed_trade is None:
+            print(
+                f"{symbol}: paper full exit "
+                "failed after SELL registration."
+            )
+            continue
+
+        if lifecycle.has_open_trade(
+            symbol
+        ):
             lifecycle.close_trade(
                 symbol=symbol,
                 exit_price=current_price,
                 exit_reason=exit_signal,
             )
+
+        sell_order = (
+            sell_result.get(
+                "order",
+                {},
+            )
+            or {}
+        )
+
+        print(
+            f"{symbol}: full SELL registered | "
+            f"Reason: {exit_signal} | "
+            f"Qty: {remaining_quantity} | "
+            f"Status: "
+            f"{sell_order.get('status', 'UNKNOWN')} | "
+            f"Internal Order ID: "
+            f"{sell_order.get('internal_order_id')}"
+        )
             
 
 def close_all_positions(
     market: MarketData,
     trader: PaperTrader,
     lifecycle: TradeLifecycle,
+    live_execution_controller: LiveExecutionController,
     reason: str,
 ) -> None:
     symbols = list(
@@ -2233,10 +2396,13 @@ def main() -> None:
             >= FORCE_EXIT_TIME
         ):
             close_all_positions(
-                market=market,
-                trader=trader,
-                lifecycle=lifecycle,
-                reason="DAY_END_EXIT",
+              market=market,
+              trader=trader,
+              lifecycle=lifecycle,
+              live_execution_controller=(
+                 live_execution_controller
+                 ),
+               reason="DAY_END_EXIT",
             )
 
             print(
@@ -2249,6 +2415,9 @@ def main() -> None:
             market=market,
             trader=trader,
             lifecycle=lifecycle,
+            live_execution_controller=(
+                live_execution_controller
+            ),
         )
 
         current_timestamp = time.time()
@@ -2372,4 +2541,3 @@ if __name__ == "__main__":
         print(
             "\nPaper trader stopped manually."
         )
-        
