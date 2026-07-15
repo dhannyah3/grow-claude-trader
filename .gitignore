@@ -74,3 +74,5 @@ dist/
 # Historical research datasets
 data/historical/*
 !data/historical/.gitkeep
+
+research/results/
