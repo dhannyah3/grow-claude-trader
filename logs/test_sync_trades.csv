@@ -1,2 +1,0 @@
-entry_time,exit_time,symbol,quantity,entry_price,exit_price,stop_loss,target,pnl,exit_reason
-2026-07-14T16:42:12.658910,2026-07-14T16:42:12.659279,TEST,10,100.0,100.0,100.0,110.0,0.0,TEST_CLEANUP
