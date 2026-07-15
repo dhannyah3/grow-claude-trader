@@ -2,13 +2,26 @@
 Strategy evaluator for historical research.
 
 Runs a simple long-only ORB strategy over a prepared
-feature dataset and calculates core performance metrics.
+feature dataset and calculates performance after:
+
+- adverse entry slippage;
+- adverse exit slippage;
+- brokerage;
+- STT;
+- exchange transaction charges;
+- SEBI charges;
+- stamp duty;
+- GST.
+
+The evaluator is reused by the optimizer, multi-symbol
+evaluator, multi-year evaluator, and walk-forward validator.
 """
 
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from core.trading_costs import calculate_intraday_costs
 from research.dataset_builder import DatasetBuilder
 
 
@@ -16,8 +29,19 @@ class StrategyEvaluator:
     def __init__(
         self,
         initial_balance: float = 100000.0,
+        quantity: int = 1,
+        slippage_bps: float = 5.0,
     ) -> None:
         self.initial_balance = float(initial_balance)
+        self.quantity = int(quantity)
+        self.slippage_bps = float(slippage_bps)
+
+        if self.initial_balance <= 0:
+            raise ValueError("Initial balance must be greater than zero.")
+        if self.quantity <= 0:
+            raise ValueError("Quantity must be greater than zero.")
+        if self.slippage_bps < 0:
+            raise ValueError("Slippage cannot be negative.")
 
     def evaluate_orb(
         self,
@@ -31,6 +55,17 @@ class StrategyEvaluator:
     ) -> Dict[str, Any]:
         if dataframe.empty:
             return self._empty_result()
+
+        if opening_range_minutes <= 0:
+            raise ValueError("Opening range must be greater than zero.")
+        if stop_atr_multiplier <= 0:
+            raise ValueError("Stop ATR multiplier must be greater than zero.")
+        if target_atr_multiplier <= 0:
+            raise ValueError("Target ATR multiplier must be greater than zero.")
+        if minimum_rsi > maximum_rsi:
+            raise ValueError("Minimum RSI cannot be greater than maximum RSI.")
+        if minimum_volume_ratio < 0:
+            raise ValueError("Minimum volume ratio cannot be negative.")
 
         required_columns = {
             "timestamp",
@@ -47,18 +82,13 @@ class StrategyEvaluator:
         }
 
         missing = required_columns.difference(dataframe.columns)
-
         if missing:
             raise ValueError(
-                "Dataset is missing columns: "
-                + ", ".join(sorted(missing))
+                "Dataset is missing columns: " + ", ".join(sorted(missing))
             )
 
         df = dataframe.copy()
-        df["timestamp"] = pd.to_datetime(
-            df["timestamp"],
-            errors="coerce",
-        )
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
         numeric_columns = [
             "open",
@@ -74,107 +104,64 @@ class StrategyEvaluator:
         ]
 
         for column in numeric_columns:
-            df[column] = pd.to_numeric(
-                df[column],
-                errors="coerce",
-            )
+            df[column] = pd.to_numeric(df[column], errors="coerce")
 
-        df = df.dropna(
-            subset=["timestamp", *numeric_columns]
-        )
-
-        df = df.sort_values(
-            "timestamp"
-        ).reset_index(drop=True)
-
+        df = df.dropna(subset=["timestamp", *numeric_columns])
+        df = df.sort_values("timestamp").reset_index(drop=True)
         df["trade_date"] = df["timestamp"].dt.date
 
+        slippage_rate = self.slippage_bps / 10000.0
         trades: List[Dict[str, Any]] = []
 
-        for trade_date, day_data in df.groupby(
-            "trade_date"
-        ):
-            day_data = (
-                day_data.sort_values("timestamp")
-                .reset_index(drop=True)
-            )
-
+        for trade_date, day_data in df.groupby("trade_date"):
+            day_data = day_data.sort_values("timestamp").reset_index(drop=True)
             if day_data.empty:
                 continue
 
             market_open = day_data.iloc[0]["timestamp"]
-            opening_range_end = (
-                market_open
-                + pd.Timedelta(
-                    minutes=opening_range_minutes
-                )
+            opening_range_end = market_open + pd.Timedelta(
+                minutes=opening_range_minutes
             )
 
             opening_data = day_data[
-                day_data["timestamp"]
-                < opening_range_end
+                day_data["timestamp"] < opening_range_end
             ]
-
             trading_data = day_data[
-                day_data["timestamp"]
-                >= opening_range_end
+                day_data["timestamp"] >= opening_range_end
             ]
 
-            if (
-                opening_data.empty
-                or trading_data.empty
-            ):
+            if opening_data.empty or trading_data.empty:
                 continue
 
-            opening_high = float(
-                opening_data["high"].max()
-            )
-
-            position: Optional[
-                Dict[str, Any]
-            ] = None
+            opening_high = float(opening_data["high"].max())
+            position: Optional[Dict[str, Any]] = None
 
             for _, row in trading_data.iterrows():
                 if position is None:
+                    raw_entry_price = float(row["close"])
                     entry_allowed = (
-                        float(row["close"]) > opening_high
-                        and float(row["ema_20"])
-                        > float(row["ema_50"])
-                        and float(row["close"])
-                        > float(row["vwap"])
-                        and minimum_rsi
-                        <= float(row["rsi"])
-                        <= maximum_rsi
-                        and float(row["volume_ratio"])
-                        >= minimum_volume_ratio
+                        raw_entry_price > opening_high
+                        and float(row["ema_20"]) > float(row["ema_50"])
+                        and raw_entry_price > float(row["vwap"])
+                        and minimum_rsi <= float(row["rsi"]) <= maximum_rsi
+                        and float(row["volume_ratio"]) >= minimum_volume_ratio
                         and float(row["atr"]) > 0
                     )
 
                     if not entry_allowed:
                         continue
 
-                    entry_price = float(row["close"])
+                    entry_price = raw_entry_price * (1.0 + slippage_rate)
                     atr = float(row["atr"])
+                    stop_loss = entry_price - (atr * stop_atr_multiplier)
+                    target = entry_price + (atr * target_atr_multiplier)
 
-                    stop_loss = (
-                        entry_price
-                        - atr * stop_atr_multiplier
-                    )
-
-                    target = (
-                        entry_price
-                        + atr * target_atr_multiplier
-                    )
-
-                    if not (
-                        0 < stop_loss
-                        < entry_price
-                        < target
-                    ):
+                    if not (0 < stop_loss < entry_price < target):
                         continue
 
                     position = {
                         "entry_time": row["timestamp"],
+                        "raw_entry_price": raw_entry_price,
                         "entry_price": entry_price,
                         "stop_loss": stop_loss,
                         "target": target,
@@ -183,55 +170,45 @@ class StrategyEvaluator:
 
                 low = float(row["low"])
                 high = float(row["high"])
-
-                exit_price: Optional[float] = None
+                raw_exit_price: Optional[float] = None
                 exit_reason = ""
 
-                if low <= float(
-                    position["stop_loss"]
-                ):
-                    exit_price = float(
-                        position["stop_loss"]
-                    )
+                if low <= float(position["stop_loss"]):
+                    raw_exit_price = float(position["stop_loss"])
                     exit_reason = "STOP_LOSS"
-
-                elif high >= float(
-                    position["target"]
-                ):
-                    exit_price = float(
-                        position["target"]
-                    )
+                elif high >= float(position["target"]):
+                    raw_exit_price = float(position["target"])
                     exit_reason = "TARGET"
 
-                if exit_price is None:
+                if raw_exit_price is None:
                     continue
 
+                exit_price = raw_exit_price * (1.0 - slippage_rate)
                 trades.append(
                     self._build_trade(
                         trade_date=trade_date,
                         position=position,
                         exit_time=row["timestamp"],
+                        raw_exit_price=raw_exit_price,
                         exit_price=exit_price,
                         exit_reason=exit_reason,
                     )
                 )
-
                 position = None
                 break
 
             if position is not None:
                 last_row = day_data.iloc[-1]
+                raw_exit_price = float(last_row["close"])
+                exit_price = raw_exit_price * (1.0 - slippage_rate)
 
                 trades.append(
                     self._build_trade(
                         trade_date=trade_date,
                         position=position,
-                        exit_time=last_row[
-                            "timestamp"
-                        ],
-                        exit_price=float(
-                            last_row["close"]
-                        ),
+                        exit_time=last_row["timestamp"],
+                        raw_exit_price=raw_exit_price,
+                        exit_price=exit_price,
                         exit_reason="DAY_END_EXIT",
                     )
                 )
@@ -243,28 +220,32 @@ class StrategyEvaluator:
         trade_date: Any,
         position: Dict[str, Any],
         exit_time: Any,
+        raw_exit_price: float,
         exit_price: float,
         exit_reason: str,
     ) -> Dict[str, Any]:
-        entry_price = float(
-            position["entry_price"]
+        raw_entry_price = float(position["raw_entry_price"])
+        entry_price = float(position["entry_price"])
+        stop_loss = float(position["stop_loss"])
+        quantity = int(self.quantity)
+
+        initial_risk_per_share = entry_price - stop_loss
+        initial_risk_amount = initial_risk_per_share * quantity
+        gross_pnl = (float(exit_price) - entry_price) * quantity
+
+        cost_breakdown = calculate_intraday_costs(
+            buy_price=entry_price,
+            sell_price=float(exit_price),
+            quantity=quantity,
         )
 
-        stop_loss = float(
-            position["stop_loss"]
-        )
-
-        initial_risk = (
-            entry_price - stop_loss
-        )
-
-        pnl = (
-            float(exit_price) - entry_price
-        )
-
+        transaction_costs = float(cost_breakdown["total_costs"])
+        net_pnl = gross_pnl - transaction_costs
+        gross_pnl_per_share = gross_pnl / quantity
+        net_pnl_per_share = net_pnl / quantity
         r_multiple = (
-            pnl / initial_risk
-            if initial_risk > 0
+            net_pnl / initial_risk_amount
+            if initial_risk_amount > 0
             else 0.0
         )
 
@@ -272,13 +253,28 @@ class StrategyEvaluator:
             "trade_date": str(trade_date),
             "entry_time": position["entry_time"],
             "exit_time": exit_time,
+            "quantity": quantity,
+            "raw_entry_price": raw_entry_price,
             "entry_price": entry_price,
+            "raw_exit_price": float(raw_exit_price),
             "exit_price": float(exit_price),
             "stop_loss": stop_loss,
             "target": float(position["target"]),
             "exit_reason": exit_reason,
-            "pnl": float(pnl),
+            "gross_pnl": float(gross_pnl),
+            "gross_pnl_per_share": float(gross_pnl_per_share),
+            "brokerage": float(cost_breakdown["brokerage"]),
+            "stt": float(cost_breakdown["stt"]),
+            "exchange_charges": float(cost_breakdown["exchange_charges"]),
+            "sebi_charges": float(cost_breakdown["sebi_charges"]),
+            "stamp_duty": float(cost_breakdown["stamp_duty"]),
+            "gst": float(cost_breakdown["gst"]),
+            "transaction_costs": transaction_costs,
+            "net_pnl": float(net_pnl),
+            "net_pnl_per_share": float(net_pnl_per_share),
+            "pnl": float(net_pnl),
             "r_multiple": float(r_multiple),
+            "slippage_bps": float(self.slippage_bps),
         }
 
     def _summarize(
@@ -289,87 +285,37 @@ class StrategyEvaluator:
             return self._empty_result()
 
         trade_df = pd.DataFrame(trades)
-
-        wins = trade_df[
-            trade_df["pnl"] > 0
-        ]
-        losses = trade_df[
-            trade_df["pnl"] < 0
-        ]
-        breakeven = trade_df[
-            trade_df["pnl"] == 0
-        ]
-
+        wins = trade_df[trade_df["pnl"] > 0]
+        losses = trade_df[trade_df["pnl"] < 0]
+        breakeven = trade_df[trade_df["pnl"] == 0]
         total_trades = len(trade_df)
 
-        gross_profit = float(
-            wins["pnl"].sum()
-        )
-
-        gross_loss = abs(
-            float(losses["pnl"].sum())
-        )
-
-        total_pnl = float(
-            trade_df["pnl"].sum()
-        )
-
-        win_rate = (
-            len(wins)
-            / total_trades
-            * 100
-        )
-
-        loss_rate = (
-            len(losses)
-            / total_trades
-            * 100
-        )
-
+        gross_strategy_pnl = float(trade_df["gross_pnl"].sum())
+        total_transaction_costs = float(trade_df["transaction_costs"].sum())
+        gross_profit = float(wins["pnl"].sum())
+        gross_loss = abs(float(losses["pnl"].sum()))
+        total_pnl = float(trade_df["pnl"].sum())
+        win_rate = len(wins) / total_trades * 100
+        loss_rate = len(losses) / total_trades * 100
         profit_factor = (
             gross_profit / gross_loss
             if gross_loss > 0
             else float("inf")
         )
-
-        expectancy = (
-            total_pnl / total_trades
-        )
-
-        average_win = (
-            float(wins["pnl"].mean())
-            if not wins.empty
-            else 0.0
-        )
-
-        average_loss = (
-            float(losses["pnl"].mean())
-            if not losses.empty
-            else 0.0
-        )
+        expectancy = total_pnl / total_trades
+        average_win = float(wins["pnl"].mean()) if not wins.empty else 0.0
+        average_loss = float(losses["pnl"].mean()) if not losses.empty else 0.0
 
         equity = pd.concat(
             [
-                pd.Series(
-                    [self.initial_balance]
-                ),
-                (
-                    self.initial_balance
-                    + trade_df["pnl"].cumsum()
-                ),
+                pd.Series([self.initial_balance]),
+                self.initial_balance + trade_df["pnl"].cumsum(),
             ],
             ignore_index=True,
         )
-
         running_peak = equity.cummax()
-
-        drawdown = (
-            equity - running_peak
-        )
-
-        max_drawdown = abs(
-            float(drawdown.min())
-        )
+        drawdown = equity - running_peak
+        max_drawdown = abs(float(drawdown.min()))
 
         return {
             "total_trades": total_trades,
@@ -378,55 +324,28 @@ class StrategyEvaluator:
             "breakeven": len(breakeven),
             "win_rate": round(win_rate, 2),
             "loss_rate": round(loss_rate, 2),
+            "gross_strategy_pnl": round(gross_strategy_pnl, 2),
+            "transaction_costs": round(total_transaction_costs, 2),
             "total_pnl": round(total_pnl, 2),
-            "gross_profit": round(
-                gross_profit,
-                2,
-            ),
-            "gross_loss": round(
-                gross_loss,
-                2,
-            ),
-            "average_win": round(
-                average_win,
-                4,
-            ),
-            "average_loss": round(
-                average_loss,
-                4,
-            ),
+            "gross_profit": round(gross_profit, 2),
+            "gross_loss": round(gross_loss, 2),
+            "average_win": round(average_win, 4),
+            "average_loss": round(average_loss, 4),
             "profit_factor": (
                 round(profit_factor, 4)
-                if profit_factor
-                != float("inf")
+                if profit_factor != float("inf")
                 else float("inf")
             ),
-            "expectancy": round(
-                expectancy,
-                4,
-            ),
-            "average_r": round(
-                float(
-                    trade_df[
-                        "r_multiple"
-                    ].mean()
-                ),
-                4,
-            ),
-            "max_drawdown": round(
-                max_drawdown,
-                2,
-            ),
-            "ending_balance": round(
-                float(equity.iloc[-1]),
-                2,
-            ),
+            "expectancy": round(expectancy, 4),
+            "average_r": round(float(trade_df["r_multiple"].mean()), 4),
+            "max_drawdown": round(max_drawdown, 2),
+            "ending_balance": round(float(equity.iloc[-1]), 2),
+            "quantity": int(self.quantity),
+            "slippage_bps": float(self.slippage_bps),
             "trades": trades,
         }
 
-    def _empty_result(
-        self,
-    ) -> Dict[str, Any]:
+    def _empty_result(self) -> Dict[str, Any]:
         return {
             "total_trades": 0,
             "wins": 0,
@@ -434,6 +353,8 @@ class StrategyEvaluator:
             "breakeven": 0,
             "win_rate": 0.0,
             "loss_rate": 0.0,
+            "gross_strategy_pnl": 0.0,
+            "transaction_costs": 0.0,
             "total_pnl": 0.0,
             "gross_profit": 0.0,
             "gross_loss": 0.0,
@@ -443,24 +364,26 @@ class StrategyEvaluator:
             "expectancy": 0.0,
             "average_r": 0.0,
             "max_drawdown": 0.0,
-            "ending_balance": round(
-                self.initial_balance,
-                2,
-            ),
+            "ending_balance": round(self.initial_balance, 2),
+            "quantity": int(self.quantity),
+            "slippage_bps": float(self.slippage_bps),
             "trades": [],
         }
 
 
 if __name__ == "__main__":
     builder = DatasetBuilder()
-
     dataset = builder.build_dataset(
         symbol="RELIANCE",
         interval_name="5m",
         year=2026,
     )
 
-    evaluator = StrategyEvaluator()
+    evaluator = StrategyEvaluator(
+        initial_balance=100000.0,
+        quantity=1,
+        slippage_bps=5.0,
+    )
 
     result = evaluator.evaluate_orb(
         dataframe=dataset,
@@ -474,17 +397,15 @@ if __name__ == "__main__":
 
     print()
     print("=" * 60)
-    print("ORB STRATEGY EVALUATION")
+    print("ORB STRATEGY EVALUATION WITH COSTS")
     print("=" * 60)
 
     for key, value in result.items():
         if key == "trades":
             continue
-
         print(f"{key}: {value}")
 
     print()
     print("Trades:")
-
     for trade in result["trades"]:
         print(trade)
