@@ -21,8 +21,17 @@ from research.historical_data_manager import (
 )
 
 
-DEFAULT_SYMBOLS: List[str] = [
+DEFAULT_SYMBOLS = [
     "RELIANCE",
+    "TCS",
+    "INFY",
+    "HDFCBANK",
+    "ICICIBANK",
+    "SBIN",
+    "LT",
+    "AXISBANK",
+    "BHARTIARTL",
+    "ITC",
 ]
 
 DEFAULT_YEARS: List[int] = [
