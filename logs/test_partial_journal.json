@@ -1,0 +1,41 @@
+[
+    {
+        "journal_time": "2026-07-14T16:57:10.590704",
+        "symbol": "TEST",
+        "strategy": "UNKNOWN",
+        "entry_time": "2026-07-14T16:57:10.590096",
+        "exit_time": "2026-07-14T16:57:10.590508",
+        "quantity": 100,
+        "entry_price": 100.0,
+        "exit_price": 120.0,
+        "stop_loss": 95.0,
+        "target": 125.0,
+        "pnl": 1500.0,
+        "result": "WIN",
+        "exit_reason": "TRAILING_STOP",
+        "claude": {
+            "approved": false,
+            "confidence": 0,
+            "reason": ""
+        },
+        "indicators": {
+            "rsi": 0.0,
+            "atr": 0.0,
+            "ema_20": 0.0,
+            "ema_50": 0.0,
+            "vwap": 0.0,
+            "macd": 0.0,
+            "macd_signal": 0.0,
+            "opening_high": 0.0
+        },
+        "market_condition": "UNKNOWN",
+        "market_regime": {},
+        "market_intelligence": {},
+        "market_brain": {},
+        "market_quality": 0,
+        "strategy_score": 0,
+        "brain_confidence": 0,
+        "brain_risk_multiplier": 1.0,
+        "position_multiplier": 1.0
+    }
+]
