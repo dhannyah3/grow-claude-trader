@@ -56,6 +56,7 @@ MINIMUM_CLAUDE_CONFIDENCE = 70
 SCAN_INTERVAL_SECONDS = 60
 REQUEST_DELAY_SECONDS = 1.5
 MONITOR_INTERVAL_SECONDS = 10
+POSITION_SYNC_INTERVAL_SECONDS = 300
 
 FORCE_EXIT_TIME = clock_time(15, 20)
 MINIMUM_CANDLES = 50
@@ -2021,56 +2022,10 @@ def monitor_positions(
             )
             continue
 
-        position = trader.get_open_position(
-            symbol
-        )
-
-        if position is None:
-            continue
-
-        quantity = int(
-            position.get(
-                "quantity",
-                0,
-            )
-            or 0
-        )
-
-        if quantity <= 0:
-            print(
-                f"{symbol}: invalid quantity "
-                "for day-end exit."
-            )
-            continue
-
-        sell_result = execute_paper_sell(
-            controller=(
-                live_execution_controller
-            ),
-            symbol=symbol,
-            quantity=quantity,
-            price=exit_price,
-            reason=reason,
-            metadata={
-                "full_exit": True,
-                "day_end_exit": True,
-            },
-        )
-
-        if not sell_result.get(
-            "success",
-            False,
-        ):
-            print(
-                f"{symbol}: day-end SELL "
-                "registration failed."
-            )
-            continue
-
         closed_trade = trader.close_trade(
             symbol=symbol,
-            exit_price=exit_price,
-            exit_reason=reason,
+            exit_price=current_price,
+            exit_reason=exit_signal,
         )
 
         if closed_trade is None:
@@ -2138,6 +2093,52 @@ def close_all_positions(
         exit_price = float(
             quote["last_price"]
         )
+
+        position = trader.get_open_position(
+            symbol
+        )
+
+        if position is None:
+            continue
+
+        quantity = int(
+            position.get(
+                "quantity",
+                0,
+            )
+            or 0
+        )
+
+        if quantity <= 0:
+            print(
+                f"{symbol}: invalid quantity "
+                "for day-end exit."
+            )
+            continue
+
+        sell_result = execute_paper_sell(
+            controller=(
+                live_execution_controller
+            ),
+            symbol=symbol,
+            quantity=quantity,
+            price=exit_price,
+            reason=reason,
+            metadata={
+                "full_exit": True,
+                "day_end_exit": True,
+            },
+        )
+
+        if not sell_result.get(
+            "success",
+            False,
+        ):
+            print(
+                f"{symbol}: day-end SELL "
+                "registration failed."
+            )
+            continue
 
         closed_trade = trader.close_trade(
             symbol=symbol,
@@ -2260,6 +2261,95 @@ def build_watchlist_display(
     return rows
 
 
+def run_position_synchronization(
+    market: MarketData,
+    trader: PaperTrader,
+    live_execution_controller: LiveExecutionController,
+    live_trading: bool,
+) -> Dict[str, Any]:
+    """
+    Compare internal positions with Groww positions.
+
+    In paper mode, broker reconciliation is skipped
+    because paper positions do not exist at Groww.
+    """
+    if not live_trading:
+        return {
+            "skipped": True,
+            "reason": (
+                "Position synchronization skipped "
+                "because live trading is disabled."
+            ),
+            "synchronized": True,
+            "mismatches": 0,
+            "comparisons": [],
+        }
+
+    broker_positions = (
+        market.get_broker_positions()
+    )
+
+    if broker_positions is None:
+        return {
+            "skipped": False,
+            "synchronized": False,
+            "mismatches": 0,
+            "comparisons": [],
+            "reason": (
+                "Broker positions could not "
+                "be fetched."
+            ),
+        }
+
+    internal_positions = (
+        trader.get_open_positions()
+    )
+
+    result = (
+        live_execution_controller
+        .synchronize_positions(
+            internal_positions=(
+                internal_positions
+            ),
+            broker_positions=(
+                broker_positions
+            ),
+        )
+    )
+
+    if result.get(
+        "synchronized",
+        False,
+    ):
+        print(
+            "Position synchronization: "
+            "all positions matched."
+        )
+
+    else:
+        print(
+            "Position synchronization "
+            f"found {result.get('mismatches', 0)} "
+            "mismatch(es)."
+        )
+
+        for comparison in result.get(
+            "comparisons",
+            [],
+        ):
+            if comparison.get(
+                "status"
+            ) == "MATCHED":
+                continue
+
+            print(
+                f"- {comparison.get('symbol', 'UNKNOWN')}: "
+                f"{comparison.get('status', 'UNKNOWN')}"
+            )
+
+    return result
+
+
 def main() -> None:
     market = MarketData()
     market_regime = MarketRegime()
@@ -2305,9 +2395,13 @@ def main() -> None:
         log_file="logs/paper_trades.csv",
     )
     
+    live_trading_enabled = False
+
     order_executor = OrderExecutor(
         groww_client=None,
-        live_trading=False,
+        live_trading=(
+            live_trading_enabled
+        ),
     )
 
     order_manager = OrderManager()
@@ -2320,6 +2414,29 @@ def main() -> None:
         position_sync=position_sync,
     )
 
+    startup_sync_result = (
+        run_position_synchronization(
+            market=market,
+            trader=trader,
+            live_execution_controller=(
+                live_execution_controller
+            ),
+            live_trading=(
+                live_trading_enabled
+            ),
+        )
+    )
+
+    if startup_sync_result.get(
+        "skipped",
+        False,
+    ):
+        print(
+            startup_sync_result.get(
+                "reason",
+                "Position synchronization skipped.",
+            )
+        )
 
     lifecycle = TradeLifecycle()
 
@@ -2369,6 +2486,7 @@ def main() -> None:
     ] = []
 
     last_scan_time = 0.0
+    last_position_sync_time = 0.0
 
     print(
         "Starting automatic "
@@ -2396,13 +2514,13 @@ def main() -> None:
             >= FORCE_EXIT_TIME
         ):
             close_all_positions(
-              market=market,
-              trader=trader,
-              lifecycle=lifecycle,
-              live_execution_controller=(
-                 live_execution_controller
-                 ),
-               reason="DAY_END_EXIT",
+                market=market,
+                trader=trader,
+                lifecycle=lifecycle,
+                live_execution_controller=(
+                    live_execution_controller
+                ),
+                reason="DAY_END_EXIT",
             )
 
             print(
@@ -2421,6 +2539,39 @@ def main() -> None:
         )
 
         current_timestamp = time.time()
+
+        should_sync_positions = (
+            current_timestamp
+            - last_position_sync_time
+            >= POSITION_SYNC_INTERVAL_SECONDS
+        )
+
+        if should_sync_positions:
+            sync_result = (
+                run_position_synchronization(
+                    market=market,
+                    trader=trader,
+                    live_execution_controller=(
+                        live_execution_controller
+                    ),
+                    live_trading=(
+                        live_trading_enabled
+                    ),
+                )
+            )
+
+            if not sync_result.get(
+                "skipped",
+                False,
+            ):
+                print(
+                    "Runtime position "
+                    "synchronization completed."
+                )
+
+            last_position_sync_time = (
+                current_timestamp
+            )
 
         should_scan = (
             can_open_new_trade(
