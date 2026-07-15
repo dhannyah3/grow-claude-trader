@@ -33,6 +33,7 @@ from core.portfolio_heat_manager import (
     PortfolioHeatManager,
 )
 from core.risk_manager import RiskManager
+from core.safety_manager import SafetyManager
 from core.trade_lifecycle import TradeLifecycle
 from data.market_data import MarketData
 from intelligence.market_brain import MarketBrain
@@ -2479,6 +2480,14 @@ def main() -> None:
         max_daily_loss_percent=2.0,
         max_position_percent=20.0,
         max_open_positions=2,
+    )
+
+    safety_manager = SafetyManager(
+        max_trades_per_day=5,
+        max_daily_loss=2000.0,
+        max_consecutive_losses=3,
+        max_api_failures=5,
+        max_broker_failures=3,
     )
 
     latest_scan: List[
