@@ -1,9 +1,9 @@
 """
 VWAP Pullback Optimizer
 
-Tests multiple VWAP pullback parameter combinations
-using realistic costs, slippage, dynamic sizing,
-and account-level performance.
+Runs a coarse 256-combination search over the VWAP pullback
+strategy with realistic costs, slippage, dynamic sizing,
+capital limits, and post-cost performance ranking.
 """
 
 from itertools import product
@@ -13,9 +13,7 @@ from typing import Any, Dict, List
 import pandas as pd
 
 from research.dataset_builder import DatasetBuilder
-from research.vwap_pullback_evaluator import (
-    VWAPPullbackEvaluator,
-)
+from research.vwap_pullback_evaluator import VWAPPullbackEvaluator
 
 
 class VWAPPullbackOptimizer:
@@ -28,58 +26,28 @@ class VWAPPullbackOptimizer:
         max_position_percent: float = 20.0,
         slippage_bps: float = 5.0,
     ) -> None:
-        self.symbol = str(
-            symbol
-        ).strip().upper()
-
-        self.interval_name = str(
-            interval_name
-        ).strip()
-
+        self.symbol = str(symbol).strip().upper()
+        self.interval_name = str(interval_name).strip()
         self.builder = DatasetBuilder()
-
-        self.evaluator = (
-            VWAPPullbackEvaluator(
-                initial_balance=(
-                    initial_balance
-                ),
-                risk_per_trade_percent=(
-                    risk_per_trade_percent
-                ),
-                max_position_percent=(
-                    max_position_percent
-                ),
-                slippage_bps=(
-                    slippage_bps
-                ),
-            )
+        self.evaluator = VWAPPullbackEvaluator(
+            initial_balance=initial_balance,
+            risk_per_trade_percent=risk_per_trade_percent,
+            max_position_percent=max_position_percent,
+            slippage_bps=slippage_bps,
         )
 
-    def load_dataset(
-        self,
-    ) -> pd.DataFrame:
-        raw_data = (
-            self.builder.historical.load(
-                symbol=self.symbol,
-                interval_name=(
-                    self.interval_name
-                ),
-                year=None,
-            )
+    def load_dataset(self) -> pd.DataFrame:
+        raw_data = self.builder.historical.load(
+            symbol=self.symbol,
+            interval_name=self.interval_name,
+            year=None,
         )
 
         if raw_data.empty:
-            print(
-                f"{self.symbol}: no historical "
-                "data found."
-            )
+            print(f"{self.symbol}: no historical data found.")
             return raw_data
 
-        raw_data = (
-            self.builder._prepare_timestamp(
-                raw_data
-            )
-        )
+        raw_data = self.builder._prepare_timestamp(raw_data)
 
         indicator_input = {
             "candles": raw_data[
@@ -94,30 +62,16 @@ class VWAPPullbackOptimizer:
             ].values.tolist()
         }
 
-        from strategies.indicators import (
-            calculate_indicators,
-        )
+        from strategies.indicators import calculate_indicators
 
-        dataset = calculate_indicators(
-            indicator_input
-        )
+        dataset = calculate_indicators(indicator_input)
 
         if dataset.empty:
-            print(
-                "Indicator calculation "
-                "returned no rows."
-            )
+            print("Indicator calculation returned no rows.")
             return dataset
 
-        dataset = (
-            self.builder._prepare_timestamp(
-                dataset
-            )
-        )
-
-        dataset = self.builder._add_features(
-            dataset
-        )
+        dataset = self.builder._prepare_timestamp(dataset)
+        dataset = self.builder._add_features(dataset)
 
         print(
             f"{self.symbol}: loaded "
@@ -133,49 +87,14 @@ class VWAPPullbackOptimizer:
         if dataframe.empty:
             return pd.DataFrame()
 
-        minimum_rsi_values = [
-            45.0,
-            50.0,
-            55.0,
-        ]
-
-        maximum_rsi_values = [
-            65.0,
-            70.0,
-        ]
-
-        vwap_distances = [
-            0.10,
-            0.20,
-            0.30,
-            0.50,
-        ]
-
-        stop_multipliers = [
-            0.75,
-            1.0,
-            1.25,
-        ]
-
-        target_multipliers = [
-            1.5,
-            2.0,
-            2.5,
-            3.0,
-        ]
-
-        volume_ratios = [
-            0.6,
-            0.8,
-            1.0,
-            1.2,
-        ]
-
-        entry_cutoffs = [
-            "14:30",
-            "15:00",
-            "15:10",
-        ]
+        minimum_rsi_values = [40.0, 50.0]
+        maximum_rsi_values = [65.0, 75.0]
+        vwap_distances = [0.20, 0.50]
+        stop_multipliers = [0.75, 1.25]
+        target_multipliers = [2.0, 3.0]
+        volume_ratios = [0.5, 1.0]
+        pullback_lookbacks = [3, 8]
+        entry_cutoffs = ["14:30", "15:10"]
 
         combinations = list(
             product(
@@ -185,19 +104,17 @@ class VWAPPullbackOptimizer:
                 stop_multipliers,
                 target_multipliers,
                 volume_ratios,
+                pullback_lookbacks,
                 entry_cutoffs,
             )
         )
 
         print(
-            f"Testing "
-            f"{len(combinations)} "
+            f"Testing {len(combinations)} "
             "VWAP parameter combinations..."
         )
 
-        results: List[
-            Dict[str, Any]
-        ] = []
+        results: List[Dict[str, Any]] = []
 
         for index, parameters in enumerate(
             combinations,
@@ -210,134 +127,90 @@ class VWAPPullbackOptimizer:
                 stop_multiplier,
                 target_multiplier,
                 volume_ratio,
+                pullback_lookback,
                 entry_cutoff,
             ) = parameters
 
-            result = (
-                self.evaluator.evaluate(
-                    dataframe=dataframe,
-                    minimum_rsi=minimum_rsi,
-                    maximum_rsi=maximum_rsi,
-                    maximum_vwap_distance_percent=(
-                        vwap_distance
-                    ),
-                    stop_atr_multiplier=(
-                        stop_multiplier
-                    ),
-                    target_atr_multiplier=(
-                        target_multiplier
-                    ),
-                    minimum_volume_ratio=(
-                        volume_ratio
-                    ),
-                    entry_start_time="09:30",
-                    entry_cutoff_time=(
-                        entry_cutoff
-                    ),
-                    force_exit_time="15:20",
-                )
+            result = self.evaluator.evaluate(
+                dataframe=dataframe,
+                minimum_rsi=minimum_rsi,
+                maximum_rsi=maximum_rsi,
+                maximum_vwap_distance_percent=vwap_distance,
+                stop_atr_multiplier=stop_multiplier,
+                target_atr_multiplier=target_multiplier,
+                minimum_volume_ratio=volume_ratio,
+                pullback_lookback_candles=pullback_lookback,
+                entry_start_time="09:30",
+                entry_cutoff_time=entry_cutoff,
+                force_exit_time="15:20",
             )
 
             results.append(
                 {
-                    "minimum_rsi": (
-                        minimum_rsi
+                    "minimum_rsi": minimum_rsi,
+                    "maximum_rsi": maximum_rsi,
+                    "maximum_vwap_distance_percent": vwap_distance,
+                    "stop_atr_multiplier": stop_multiplier,
+                    "target_atr_multiplier": target_multiplier,
+                    "minimum_volume_ratio": volume_ratio,
+                    "pullback_lookback_candles": pullback_lookback,
+                    "entry_cutoff_time": entry_cutoff,
+                    "total_trades": result.get("total_trades", 0),
+                    "wins": result.get("wins", 0),
+                    "losses": result.get("losses", 0),
+                    "win_rate": result.get("win_rate", 0.0),
+                    "gross_strategy_pnl": result.get(
+                        "gross_strategy_pnl",
+                        0.0,
                     ),
-                    "maximum_rsi": (
-                        maximum_rsi
+                    "transaction_costs": result.get(
+                        "transaction_costs",
+                        0.0,
                     ),
-                    "maximum_vwap_distance_percent": (
-                        vwap_distance
+                    "total_pnl": result.get("total_pnl", 0.0),
+                    "profit_factor": result.get(
+                        "profit_factor",
+                        0.0,
                     ),
-                    "stop_atr_multiplier": (
-                        stop_multiplier
+                    "expectancy": result.get("expectancy", 0.0),
+                    "average_r": result.get("average_r", 0.0),
+                    "max_drawdown": result.get(
+                        "max_drawdown",
+                        0.0,
                     ),
-                    "target_atr_multiplier": (
-                        target_multiplier
+                    "max_drawdown_percent": result.get(
+                        "max_drawdown_percent",
+                        0.0,
                     ),
-                    "minimum_volume_ratio": (
-                        volume_ratio
+                    "total_return_percent": result.get(
+                        "total_return_percent",
+                        0.0,
                     ),
-                    "entry_cutoff_time": (
-                        entry_cutoff
+                    "ending_balance": result.get(
+                        "ending_balance",
+                        0.0,
                     ),
-                    "total_trades": (
-                        result.get(
-                            "total_trades",
-                            0,
-                        )
+                    "average_quantity": result.get(
+                        "average_quantity",
+                        0.0,
                     ),
-                    "win_rate": (
-                        result.get(
-                            "win_rate",
-                            0.0,
-                        )
-                    ),
-                    "total_pnl": (
-                        result.get(
-                            "total_pnl",
-                            0.0,
-                        )
-                    ),
-                    "profit_factor": (
-                        result.get(
-                            "profit_factor",
-                            0.0,
-                        )
-                    ),
-                    "expectancy": (
-                        result.get(
-                            "expectancy",
-                            0.0,
-                        )
-                    ),
-                    "average_r": (
-                        result.get(
-                            "average_r",
-                            0.0,
-                        )
-                    ),
-                    "max_drawdown": (
-                        result.get(
-                            "max_drawdown",
-                            0.0,
-                        )
-                    ),
-                    "max_drawdown_percent": (
-                        result.get(
-                            "max_drawdown_percent",
-                            0.0,
-                        )
-                    ),
-                    "total_return_percent": (
-                        result.get(
-                            "total_return_percent",
-                            0.0,
-                        )
-                    ),
-                    "ending_balance": (
-                        result.get(
-                            "ending_balance",
-                            0.0,
-                        )
+                    "skipped_for_quantity": result.get(
+                        "skipped_for_quantity",
+                        0,
                     ),
                 }
             )
 
             if (
-                index % 100 == 0
-                or index
-                == len(combinations)
+                index % 25 == 0
+                or index == len(combinations)
             ):
                 print(
-                    f"Completed "
-                    f"{index}/"
+                    f"Completed {index}/"
                     f"{len(combinations)}"
                 )
 
-        summary = pd.DataFrame(
-            results
-        )
+        summary = pd.DataFrame(results)
 
         if summary.empty:
             return summary
@@ -349,17 +222,15 @@ class VWAPPullbackOptimizer:
             >= minimum_trade_count
         )
 
+        summary["profitable"] = (
+            summary["total_pnl"] > 0
+        )
+
         summary["rank_score"] = (
             summary["average_r"] * 100
-            + summary[
-                "profit_factor"
-            ] * 10
-            + summary[
-                "total_return_percent"
-            ]
-            - summary[
-                "max_drawdown_percent"
-            ] * 2
+            + summary["profit_factor"] * 10
+            + summary["total_return_percent"]
+            - summary["max_drawdown_percent"] * 2
         )
 
         summary.loc[
@@ -370,6 +241,7 @@ class VWAPPullbackOptimizer:
         summary = summary.sort_values(
             by=[
                 "eligible",
+                "profitable",
                 "rank_score",
                 "profit_factor",
                 "total_trades",
@@ -379,18 +251,14 @@ class VWAPPullbackOptimizer:
                 False,
                 False,
                 False,
+                False,
             ],
-        ).reset_index(
-            drop=True
-        )
+        ).reset_index(drop=True)
 
         summary.insert(
             0,
             "rank",
-            range(
-                1,
-                len(summary) + 1,
-            ),
+            range(1, len(summary) + 1),
         )
 
         return summary
@@ -399,10 +267,7 @@ class VWAPPullbackOptimizer:
         self,
         results: pd.DataFrame,
     ) -> Path:
-        output_directory = Path(
-            "research/results"
-        )
-
+        output_directory = Path("research/results")
         output_directory.mkdir(
             parents=True,
             exist_ok=True,
@@ -413,7 +278,7 @@ class VWAPPullbackOptimizer:
             / (
                 f"{self.symbol}_"
                 f"{self.interval_name}_"
-                "vwap_pullback_optimization.csv"
+                "vwap_pullback_coarse_optimization.csv"
             )
         )
 
@@ -424,30 +289,21 @@ class VWAPPullbackOptimizer:
 
         return output_file
 
-    def run(
-        self,
-    ) -> pd.DataFrame:
+    def run(self) -> pd.DataFrame:
         dataset = self.load_dataset()
-
-        results = self.optimize(
-            dataset
-        )
+        results = self.optimize(dataset)
 
         if results.empty:
-            print(
-                "No optimization results."
-            )
+            print("No optimization results.")
             return results
 
-        output_file = self.save_results(
-            results
-        )
+        output_file = self.save_results(results)
 
         print()
         print("=" * 60)
         print(
             f"{self.symbol} VWAP "
-            "PULLBACK OPTIMIZATION"
+            "PULLBACK COARSE OPTIMIZATION"
         )
         print("=" * 60)
 
@@ -459,14 +315,18 @@ class VWAPPullbackOptimizer:
             "stop_atr_multiplier",
             "target_atr_multiplier",
             "minimum_volume_ratio",
+            "pullback_lookback_candles",
             "entry_cutoff_time",
             "total_trades",
             "win_rate",
+            "total_pnl",
             "profit_factor",
             "expectancy",
             "average_r",
             "max_drawdown_percent",
             "total_return_percent",
+            "eligible",
+            "profitable",
             "rank_score",
         ]
 
@@ -475,15 +335,33 @@ class VWAPPullbackOptimizer:
                 display_columns
             ]
             .head(20)
-            .to_string(
-                index=False
-            )
+            .to_string(index=False)
+        )
+
+        eligible_count = int(
+            results["eligible"].sum()
+        )
+
+        profitable_eligible_count = int(
+            (
+                results["eligible"]
+                & results["profitable"]
+            ).sum()
         )
 
         print()
         print(
-            "Optimization results "
-            "saved to:",
+            "Eligible combinations:",
+            eligible_count,
+        )
+
+        print(
+            "Profitable eligible combinations:",
+            profitable_eligible_count,
+        )
+
+        print(
+            "Optimization results saved to:",
             output_file,
         )
 

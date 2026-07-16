@@ -1,17 +1,5 @@
 """
-VWAP Pullback Strategy Evaluator
-
-Tests a long-only VWAP pullback setup using:
-
-- realistic entry and exit slippage;
-- Indian intraday trading costs;
-- dynamic risk-based position sizing;
-- capital-based position limits;
-- changing account balance;
-- forced intraday exit at or before 15:20.
-
-This evaluator reuses the tested accounting and sizing
-methods from StrategyEvaluator.
+VWAP Pullback Strategy Evaluator with configurable pullback lookback.
 """
 
 from typing import Any, Dict, List, Optional
@@ -32,12 +20,8 @@ class VWAPPullbackEvaluator:
     ) -> None:
         self.base_evaluator = StrategyEvaluator(
             initial_balance=initial_balance,
-            risk_per_trade_percent=(
-                risk_per_trade_percent
-            ),
-            max_position_percent=(
-                max_position_percent
-            ),
+            risk_per_trade_percent=risk_per_trade_percent,
+            max_position_percent=max_position_percent,
             slippage_bps=slippage_bps,
         )
 
@@ -50,6 +34,7 @@ class VWAPPullbackEvaluator:
         stop_atr_multiplier: float = 1.0,
         target_atr_multiplier: float = 2.0,
         minimum_volume_ratio: float = 0.8,
+        pullback_lookback_candles: int = 5,
         entry_start_time: str = "09:30",
         entry_cutoff_time: str = "15:10",
         force_exit_time: str = "15:20",
@@ -58,48 +43,25 @@ class VWAPPullbackEvaluator:
             return self.base_evaluator._empty_result()
 
         if minimum_rsi > maximum_rsi:
-            raise ValueError(
-                "Minimum RSI cannot exceed maximum RSI."
-            )
-
+            raise ValueError("Minimum RSI cannot exceed maximum RSI.")
         if maximum_vwap_distance_percent < 0:
-            raise ValueError(
-                "Maximum VWAP distance cannot be negative."
-            )
-
+            raise ValueError("Maximum VWAP distance cannot be negative.")
         if stop_atr_multiplier <= 0:
-            raise ValueError(
-                "Stop ATR multiplier must be greater than zero."
-            )
-
+            raise ValueError("Stop ATR multiplier must be greater than zero.")
         if target_atr_multiplier <= 0:
-            raise ValueError(
-                "Target ATR multiplier must be greater than zero."
-            )
-
+            raise ValueError("Target ATR multiplier must be greater than zero.")
         if minimum_volume_ratio < 0:
-            raise ValueError(
-                "Minimum volume ratio cannot be negative."
-            )
+            raise ValueError("Minimum volume ratio cannot be negative.")
+        if pullback_lookback_candles <= 0:
+            raise ValueError("Pullback lookback candles must be greater than zero.")
 
         required_columns = {
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "atr",
-            "rsi",
-            "ema_20",
-            "ema_50",
-            "vwap",
+            "timestamp", "open", "high", "low", "close",
+            "atr", "rsi", "ema_20", "ema_50", "vwap",
             "volume_ratio",
         }
 
-        missing = required_columns.difference(
-            dataframe.columns
-        )
-
+        missing = required_columns.difference(dataframe.columns)
         if missing:
             raise ValueError(
                 "Dataset is missing columns: "
@@ -107,23 +69,14 @@ class VWAPPullbackEvaluator:
             )
 
         df = dataframe.copy()
-
         df["timestamp"] = pd.to_datetime(
             df["timestamp"],
             errors="coerce",
         )
 
         numeric_columns = [
-            "open",
-            "high",
-            "low",
-            "close",
-            "atr",
-            "rsi",
-            "ema_20",
-            "ema_50",
-            "vwap",
-            "volume_ratio",
+            "open", "high", "low", "close", "atr", "rsi",
+            "ema_20", "ema_50", "vwap", "volume_ratio",
         ]
 
         for column in numeric_columns:
@@ -133,60 +86,31 @@ class VWAPPullbackEvaluator:
             )
 
         df = df.dropna(
-            subset=[
-                "timestamp",
-                *numeric_columns,
-            ]
+            subset=["timestamp", *numeric_columns]
         )
+        df = df.sort_values("timestamp").reset_index(drop=True)
+        df["trade_date"] = df["timestamp"].dt.date
 
-        df = df.sort_values(
-            "timestamp"
-        ).reset_index(drop=True)
+        entry_start = pd.Timestamp(entry_start_time).time()
+        entry_cutoff = pd.Timestamp(entry_cutoff_time).time()
+        forced_exit = pd.Timestamp(force_exit_time).time()
 
-        df["trade_date"] = (
-            df["timestamp"].dt.date
-        )
-
-        entry_start = pd.Timestamp(
-            entry_start_time
-        ).time()
-
-        entry_cutoff = pd.Timestamp(
-            entry_cutoff_time
-        ).time()
-
-        forced_exit = pd.Timestamp(
-            force_exit_time
-        ).time()
-
-        if not (
-            entry_start
-            < entry_cutoff
-            <= forced_exit
-        ):
+        if not (entry_start < entry_cutoff <= forced_exit):
             raise ValueError(
                 "Trading times must satisfy: "
                 "entry start < entry cutoff <= force exit."
             )
 
         slippage_rate = (
-            self.base_evaluator.slippage_bps
-            / 10000.0
+            self.base_evaluator.slippage_bps / 10000.0
         )
-
         current_balance = float(
             self.base_evaluator.initial_balance
         )
-
-        trades: List[
-            Dict[str, Any]
-        ] = []
-
+        trades: List[Dict[str, Any]] = []
         skipped_for_quantity = 0
 
-        for trade_date, day_data in (
-            df.groupby("trade_date")
-        ):
+        for trade_date, day_data in df.groupby("trade_date"):
             day_data = (
                 day_data.sort_values("timestamp")
                 .reset_index(drop=True)
@@ -195,62 +119,63 @@ class VWAPPullbackEvaluator:
             if day_data.empty:
                 continue
 
-            position: Optional[
-                Dict[str, Any]
-            ] = None
+            position: Optional[Dict[str, Any]] = None
 
-            previous_row: Optional[
-                pd.Series
-            ] = None
-
-            for _, row in day_data.iterrows():
-                current_time = (
-                    row["timestamp"].time()
-                )
+            for row_index, row in day_data.iterrows():
+                current_time = row["timestamp"].time()
 
                 if current_time < entry_start:
-                    previous_row = row
                     continue
-
                 if current_time > forced_exit:
                     break
 
                 if position is None:
                     if current_time > entry_cutoff:
                         break
-
-                    if previous_row is None:
-                        previous_row = row
+                    if row_index < 1:
                         continue
 
-                    close = float(
-                        row["close"]
+                    window_start = max(
+                        0,
+                        row_index - pullback_lookback_candles,
                     )
+                    recent_window = day_data.iloc[
+                        window_start:row_index
+                    ]
 
-                    vwap = float(
-                        row["vwap"]
-                    )
+                    if recent_window.empty:
+                        continue
 
-                    previous_close = float(
-                        previous_row["close"]
-                    )
-
-                    previous_vwap = float(
-                        previous_row["vwap"]
-                    )
+                    close = float(row["close"])
+                    vwap = float(row["vwap"])
 
                     distance_percent = (
-                        abs(close - vwap)
-                        / vwap
-                        * 100.0
+                        abs(close - vwap) / vwap * 100.0
+                        if vwap > 0
+                        else float("inf")
+                    )
+
+                    recent_touch = (
+                        (
+                            recent_window["low"]
+                            <= recent_window["vwap"]
+                        )
+                        | (
+                            recent_window["close"]
+                            <= recent_window["vwap"]
+                        )
+                    ).any()
+
+                    current_reclaim = (
+                        float(row["low"]) <= vwap
+                        and close > vwap
                     )
 
                     pullback_confirmed = (
                         float(row["ema_20"])
                         > float(row["ema_50"])
-                        and previous_close
-                        <= previous_vwap
-                        and close > vwap
+                        and recent_touch
+                        and current_reclaim
                         and distance_percent
                         <= maximum_vwap_distance_percent
                         and minimum_rsi
@@ -262,149 +187,82 @@ class VWAPPullbackEvaluator:
                     )
 
                     if not pullback_confirmed:
-                        previous_row = row
                         continue
 
                     raw_entry_price = close
-
                     entry_price = (
                         raw_entry_price
                         * (1.0 + slippage_rate)
                     )
-
-                    atr = float(
-                        row["atr"]
-                    )
-
+                    atr = float(row["atr"])
                     stop_loss = (
                         entry_price
-                        - atr
-                        * stop_atr_multiplier
+                        - atr * stop_atr_multiplier
                     )
-
                     target = (
                         entry_price
-                        + atr
-                        * target_atr_multiplier
+                        + atr * target_atr_multiplier
                     )
 
                     if not (
-                        0 < stop_loss
-                        < entry_price
-                        < target
+                        0 < stop_loss < entry_price < target
                     ):
-                        previous_row = row
                         continue
 
-                    risk_per_share = (
-                        entry_price - stop_loss
-                    )
-
+                    risk_per_share = entry_price - stop_loss
                     quantity_details = (
                         self.base_evaluator
                         ._calculate_quantity(
-                            account_balance=(
-                                current_balance
-                            ),
+                            account_balance=current_balance,
                             entry_price=entry_price,
-                            risk_per_share=(
-                                risk_per_share
-                            ),
+                            risk_per_share=risk_per_share,
                         )
                     )
-
                     quantity = int(
-                        quantity_details[
-                            "quantity"
-                        ]
+                        quantity_details["quantity"]
                     )
 
                     if quantity <= 0:
                         skipped_for_quantity += 1
-                        previous_row = row
                         continue
 
                     position = {
-                        "entry_time": (
-                            row["timestamp"]
-                        ),
-                        "raw_entry_price": (
-                            raw_entry_price
-                        ),
-                        "entry_price": (
-                            entry_price
-                        ),
-                        "stop_loss": (
-                            stop_loss
-                        ),
+                        "entry_time": row["timestamp"],
+                        "raw_entry_price": raw_entry_price,
+                        "entry_price": entry_price,
+                        "stop_loss": stop_loss,
                         "target": target,
                         "quantity": quantity,
-                        "risk_budget": (
-                            quantity_details[
-                                "risk_budget"
-                            ]
-                        ),
-                        "position_capital_limit": (
-                            quantity_details[
-                                "position_capital_limit"
-                            ]
-                        ),
-                        "risk_based_quantity": (
-                            quantity_details[
-                                "risk_based_quantity"
-                            ]
-                        ),
-                        "capital_based_quantity": (
-                            quantity_details[
-                                "capital_based_quantity"
-                            ]
-                        ),
-                        "account_balance_before": (
-                            current_balance
-                        ),
+                        "risk_budget": quantity_details["risk_budget"],
+                        "position_capital_limit": quantity_details[
+                            "position_capital_limit"
+                        ],
+                        "risk_based_quantity": quantity_details[
+                            "risk_based_quantity"
+                        ],
+                        "capital_based_quantity": quantity_details[
+                            "capital_based_quantity"
+                        ],
+                        "account_balance_before": current_balance,
                     }
-
-                    previous_row = row
                     continue
 
-                low = float(
-                    row["low"]
-                )
-
-                high = float(
-                    row["high"]
-                )
-
-                raw_exit_price: Optional[
-                    float
-                ] = None
-
+                low = float(row["low"])
+                high = float(row["high"])
+                raw_exit_price: Optional[float] = None
                 exit_reason = ""
 
-                if low <= float(
-                    position["stop_loss"]
-                ):
-                    raw_exit_price = float(
-                        position["stop_loss"]
-                    )
+                if low <= float(position["stop_loss"]):
+                    raw_exit_price = float(position["stop_loss"])
                     exit_reason = "STOP_LOSS"
-
-                elif high >= float(
-                    position["target"]
-                ):
-                    raw_exit_price = float(
-                        position["target"]
-                    )
+                elif high >= float(position["target"]):
+                    raw_exit_price = float(position["target"])
                     exit_reason = "TARGET"
-
                 elif current_time >= forced_exit:
-                    raw_exit_price = float(
-                        row["close"]
-                    )
+                    raw_exit_price = float(row["close"])
                     exit_reason = "DAY_END_EXIT"
 
                 if raw_exit_price is None:
-                    previous_row = row
                     continue
 
                 exit_price = (
@@ -412,105 +270,68 @@ class VWAPPullbackEvaluator:
                     * (1.0 - slippage_rate)
                 )
 
-                trade = (
-                    self.base_evaluator
-                    ._build_trade(
-                        trade_date=trade_date,
-                        position=position,
-                        exit_time=(
-                            row["timestamp"]
-                        ),
-                        raw_exit_price=(
-                            raw_exit_price
-                        ),
-                        exit_price=exit_price,
-                        exit_reason=exit_reason,
-                    )
+                trade = self.base_evaluator._build_trade(
+                    trade_date=trade_date,
+                    position=position,
+                    exit_time=row["timestamp"],
+                    raw_exit_price=raw_exit_price,
+                    exit_price=exit_price,
+                    exit_reason=exit_reason,
+                )
+                trade["pullback_lookback_candles"] = int(
+                    pullback_lookback_candles
                 )
 
                 current_balance = float(
-                    trade[
-                        "account_balance_after"
-                    ]
+                    trade["account_balance_after"]
                 )
-
                 trades.append(trade)
-
                 position = None
                 break
 
             if position is not None:
                 exit_candidates = day_data[
-                    day_data[
-                        "timestamp"
-                    ].dt.time
-                    <= forced_exit
+                    day_data["timestamp"].dt.time <= forced_exit
                 ]
-
-                exit_candidates = (
-                    exit_candidates[
-                        exit_candidates[
-                            "timestamp"
-                        ]
-                        >= position[
-                            "entry_time"
-                        ]
-                    ]
-                )
+                exit_candidates = exit_candidates[
+                    exit_candidates["timestamp"]
+                    >= position["entry_time"]
+                ]
 
                 if exit_candidates.empty:
                     continue
 
-                last_row = (
-                    exit_candidates.iloc[-1]
-                )
-
-                raw_exit_price = float(
-                    last_row["close"]
-                )
-
+                last_row = exit_candidates.iloc[-1]
+                raw_exit_price = float(last_row["close"])
                 exit_price = (
                     raw_exit_price
                     * (1.0 - slippage_rate)
                 )
 
-                trade = (
-                    self.base_evaluator
-                    ._build_trade(
-                        trade_date=trade_date,
-                        position=position,
-                        exit_time=(
-                            last_row["timestamp"]
-                        ),
-                        raw_exit_price=(
-                            raw_exit_price
-                        ),
-                        exit_price=exit_price,
-                        exit_reason=(
-                            "DAY_END_EXIT"
-                        ),
-                    )
+                trade = self.base_evaluator._build_trade(
+                    trade_date=trade_date,
+                    position=position,
+                    exit_time=last_row["timestamp"],
+                    raw_exit_price=raw_exit_price,
+                    exit_price=exit_price,
+                    exit_reason="DAY_END_EXIT",
                 )
-
+                trade["pullback_lookback_candles"] = int(
+                    pullback_lookback_candles
+                )
                 current_balance = float(
-                    trade[
-                        "account_balance_after"
-                    ]
+                    trade["account_balance_after"]
                 )
-
                 trades.append(trade)
 
         return self.base_evaluator._summarize(
             trades=trades,
-            skipped_for_quantity=(
-                skipped_for_quantity
-            ),
+            skipped_for_quantity=skipped_for_quantity,
         )
 
 
 if __name__ == "__main__":
     builder = DatasetBuilder()
-
     dataset = builder.build_dataset(
         symbol="RELIANCE",
         interval_name="5m",
@@ -526,12 +347,13 @@ if __name__ == "__main__":
 
     result = evaluator.evaluate(
         dataframe=dataset,
-        minimum_rsi=50.0,
+        minimum_rsi=45.0,
         maximum_rsi=70.0,
-        maximum_vwap_distance_percent=0.20,
+        maximum_vwap_distance_percent=0.30,
         stop_atr_multiplier=1.0,
         target_atr_multiplier=2.0,
         minimum_volume_ratio=0.8,
+        pullback_lookback_candles=5,
         entry_start_time="09:30",
         entry_cutoff_time="15:10",
         force_exit_time="15:20",
@@ -539,18 +361,15 @@ if __name__ == "__main__":
 
     print()
     print("=" * 60)
-    print("VWAP PULLBACK EVALUATION")
+    print("VWAP PULLBACK EVALUATION WITH LOOKBACK")
     print("=" * 60)
 
     for key, value in result.items():
-        if key == "trades":
-            continue
-
-        print(f"{key}: {value}")
+        if key != "trades":
+            print(f"{key}: {value}")
 
     print()
     print("First 5 trades:")
-
     for trade in result["trades"][:5]:
         print(trade)
 
@@ -558,14 +377,9 @@ if __name__ == "__main__":
         trade
         for trade in result["trades"]
         if (
-            trade["exit_reason"]
-            == "DAY_END_EXIT"
-            and pd.Timestamp(
-                trade["exit_time"]
-            ).time()
-            > pd.Timestamp(
-                "15:20"
-            ).time()
+            trade["exit_reason"] == "DAY_END_EXIT"
+            and pd.Timestamp(trade["exit_time"]).time()
+            > pd.Timestamp("15:20").time()
         )
     ]
 
@@ -576,7 +390,6 @@ if __name__ == "__main__":
 
     print()
     print(
-        "Exit-time validation passed: "
-        "all DAY_END_EXIT trades occurred "
-        "at or before 15:20."
+        "Exit-time validation passed: all "
+        "DAY_END_EXIT trades occurred at or before 15:20."
     )
