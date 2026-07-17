@@ -1,0 +1,5 @@
+fold,train_start,train_end,test_start,test_end,lookback_period,minimum_rsi,minimum_volume_ratio,stop_atr_multiplier,target_atr_multiplier,test_symbols,profitable_symbols,losing_symbols,breakeven_symbols,profitable_symbol_percent,test_total_trades,test_combined_win_rate,test_combined_net_pnl,test_average_pnl_per_symbol,test_portfolio_profit_factor,eligible_test_fold
+1,2025-01-01,2025-06-25,2025-06-26,2025-08-06,20,60.0,1.5,1.2,2.5,10,1,8,1,10.0,19,21.053157894736845,-721.33,-72.13300000000001,0.11730442124842447,True
+2,2025-02-11,2025-08-06,2025-08-07,2025-09-19,20,60.0,1.5,1.2,2.5,10,0,8,2,0.0,20,15.0,-910.1700000000001,-91.01700000000001,0.0,True
+3,2025-03-27,2025-09-19,2025-09-22,2025-11-04,20,60.0,1.5,1.2,2.5,10,1,9,0,10.0,20,15.0,-897.49,-89.749,0.1517668963301105,True
+4,2025-05-15,2025-11-04,2025-11-07,2025-12-18,20,60.0,1.5,1.2,2.5,10,0,9,1,0.0,20,14.9995,-934.47,-93.447,0.0,True
