@@ -14,7 +14,7 @@ from research.base_strategy import BaseStrategy
 
 class EMATrendContinuationStrategy(BaseStrategy):
     """
-    EMA Trend Continuation
+    EMA Trend Continuation Strategy.
     """
 
     name = "EMA_TREND_CONTINUATION"
@@ -59,9 +59,7 @@ class EMATrendContinuationStrategy(BaseStrategy):
             pullback_lookback_candles
         )
 
-    def required_columns(
-        self,
-    ) -> set:
+    def required_columns(self) -> set:
         return {
             "timestamp",
             "open",
@@ -75,6 +73,7 @@ class EMATrendContinuationStrategy(BaseStrategy):
             "rsi",
             "volume_ratio",
         }
+
     def should_enter(
         self,
         row_index,
@@ -85,27 +84,41 @@ class EMATrendContinuationStrategy(BaseStrategy):
         if row_index < self.pullback_lookback_candles:
             return False
 
+        if (
+            row["ema_20"] != row["ema_20"]
+            or row["ema_50"] != row["ema_50"]
+            or row["atr"] != row["atr"]
+            or row["rsi"] != row["rsi"]
+        ):
+            return False
+
+        # Uptrend
         if row["ema_20"] <= row["ema_50"]:
             return False
 
+        # Price must be above EMA20
         if row["close"] <= row["ema_20"]:
             return False
 
+        # RSI filter
         if (
             row["rsi"] < self.minimum_rsi
             or row["rsi"] > self.maximum_rsi
         ):
             return False
 
+        # Volume confirmation
         if (
             row["volume_ratio"]
             < self.minimum_volume_ratio
         ):
             return False
 
+        # Price should still be close to EMA20
         ema_distance = (
             abs(
-                row["close"] - row["ema_20"]
+                row["close"]
+                - row["ema_20"]
             )
             / row["ema_20"]
             * 100
@@ -117,6 +130,7 @@ class EMATrendContinuationStrategy(BaseStrategy):
         ):
             return False
 
+        # Recent candles must have touched EMA20
         recent = day_data.iloc[
             row_index
             - self.pullback_lookback_candles:
@@ -130,15 +144,16 @@ class EMATrendContinuationStrategy(BaseStrategy):
             return False
 
         return True
-    
+
     def calculate_stop_loss(
         self,
         row,
         entry_price,
     ) -> float:
         """
-        Stop loss is ATR below entry.
+        ATR-based stop loss.
         """
+
         return (
             entry_price
             - (
@@ -154,8 +169,9 @@ class EMATrendContinuationStrategy(BaseStrategy):
         stop_loss,
     ) -> float:
         """
-        Risk-reward based target.
+        ATR-based risk-reward target.
         """
+
         risk = (
             entry_price
             - stop_loss
@@ -172,12 +188,21 @@ class EMATrendContinuationStrategy(BaseStrategy):
     def additional_trade_metadata(
         self,
         row,
-    ):
+    ) -> dict:
+
         return {
-            "ema_20": float(row["ema_20"]),
-            "ema_50": float(row["ema_50"]),
-            "rsi": float(row["rsi"]),
-            "atr": float(row["atr"]),
+            "ema_20": float(
+                row["ema_20"]
+            ),
+            "ema_50": float(
+                row["ema_50"]
+            ),
+            "rsi": float(
+                row["rsi"]
+            ),
+            "atr": float(
+                row["atr"]
+            ),
             "volume_ratio": float(
                 row["volume_ratio"]
             ),
