@@ -8,7 +8,6 @@ from research.base_strategy_evaluator import (
 from research.dataset_builder import (
     DatasetBuilder,
 )
-
 from research.gap_and_go_strategy import (
     GapAndGoStrategy,
 )
@@ -17,6 +16,9 @@ from research.cpr_breakout_strategy import (
 )
 from research.ema_trend_continuation_strategy import (
     EMATrendContinuationStrategy,
+)
+from research.donchian_breakout_strategy import (
+    DonchianBreakoutStrategy,
 )
 
 
@@ -79,6 +81,17 @@ strategies = [
         minimum_volume_ratio=1.0,
         pullback_lookback_candles=5,
     ),
+    DonchianBreakoutStrategy(
+        lookback_period=20,
+        minimum_rsi=55.0,
+        maximum_rsi=75.0,
+        minimum_volume_ratio=1.5,
+        stop_atr_multiplier=1.0,
+        target_atr_multiplier=2.5,
+        entry_start_time="09:30",
+        entry_cutoff_time="11:30",
+        force_exit_time="15:20",
+    ),
 ]
 
 
@@ -99,9 +112,10 @@ for strategy in strategies:
 
 
 results.sort(
-    key=lambda x: x["net_pnl"],
+    key=lambda item: item["net_pnl"],
     reverse=True,
 )
+
 
 print()
 print("=" * 75)
@@ -119,14 +133,17 @@ print(
 
 print("-" * 75)
 
-for i, r in enumerate(results, start=1):
+for rank, result in enumerate(
+    results,
+    start=1,
+):
     print(
-        f"{i:<5}"
-        f"{r['strategy']:<30}"
-        f"{r['trades']:>8}"
-        f"{r['win_rate']:>10.2f}"
-        f"{r['net_pnl']:>15.2f}"
-        f"{r['profit_factor']:>10.2f}"
+        f"{rank:<5}"
+        f"{result['strategy']:<30}"
+        f"{result['trades']:>8}"
+        f"{result['win_rate']:>10.2f}"
+        f"{result['net_pnl']:>15.2f}"
+        f"{result['profit_factor']:>10.2f}"
     )
 
 print("-" * 75)
