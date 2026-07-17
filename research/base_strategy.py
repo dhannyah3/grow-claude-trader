@@ -1,34 +1,23 @@
 """
 Base Strategy Interface
 
-Every research strategy should inherit from BaseStrategy
-and implement the methods below.
-
-The shared evaluator will handle:
-
-- data iteration;
-- entry and exit execution;
-- slippage;
-- costs;
-- position sizing;
-- dynamic balance;
-- trade statistics;
-- drawdown;
-- reporting.
-
-Each strategy only defines its own trading rules.
+Every research strategy inherits from BaseStrategy and defines:
+- required dataset columns;
+- optional dataframe preparation;
+- entry rules;
+- initial stop-loss;
+- initial target;
+- optional trade metadata.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 import pandas as pd
 
 
 class BaseStrategy(ABC):
-    """
-    Abstract interface for research strategies.
-    """
+    """Abstract interface for historical research strategies."""
 
     name: str = "BASE_STRATEGY"
 
@@ -38,17 +27,9 @@ class BaseStrategy(ABC):
         entry_cutoff_time: str = "15:10",
         force_exit_time: str = "15:20",
     ) -> None:
-        self.entry_start_time = pd.Timestamp(
-            entry_start_time
-        ).time()
-
-        self.entry_cutoff_time = pd.Timestamp(
-            entry_cutoff_time
-        ).time()
-
-        self.force_exit_time = pd.Timestamp(
-            force_exit_time
-        ).time()
+        self.entry_start_time = pd.Timestamp(entry_start_time).time()
+        self.entry_cutoff_time = pd.Timestamp(entry_cutoff_time).time()
+        self.force_exit_time = pd.Timestamp(force_exit_time).time()
 
         if not (
             self.entry_start_time
@@ -61,13 +42,16 @@ class BaseStrategy(ABC):
             )
 
     @abstractmethod
-    def required_columns(
-        self,
-    ) -> set:
-        """
-        Return all dataframe columns required by the strategy.
-        """
+    def required_columns(self) -> Set[str]:
+        """Return all dataframe columns required by the strategy."""
         raise NotImplementedError
+
+    def prepare_dataframe(
+        self,
+        dataframe: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Optional strategy-specific dataframe preparation."""
+        return dataframe.copy()
 
     @abstractmethod
     def should_enter(
@@ -76,10 +60,7 @@ class BaseStrategy(ABC):
         row: pd.Series,
         day_data: pd.DataFrame,
     ) -> bool:
-        """
-        Return True when the current candle satisfies
-        the strategy's entry conditions.
-        """
+        """Return True when the current candle satisfies entry rules."""
         raise NotImplementedError
 
     @abstractmethod
@@ -88,9 +69,7 @@ class BaseStrategy(ABC):
         row: pd.Series,
         entry_price: float,
     ) -> float:
-        """
-        Calculate the initial stop-loss price.
-        """
+        """Calculate the initial stop-loss price."""
         raise NotImplementedError
 
     @abstractmethod
@@ -100,69 +79,42 @@ class BaseStrategy(ABC):
         entry_price: float,
         stop_loss: float,
     ) -> float:
-        """
-        Calculate the initial target price.
-        """
+        """Calculate the initial target price."""
         raise NotImplementedError
 
     def should_force_exit(
         self,
         row: pd.Series,
     ) -> bool:
-        """
-        Return True when the position must be closed
-        because the intraday force-exit time was reached.
-        """
-        current_time = (
-            row["timestamp"].time()
-        )
-
-        return (
-            current_time
-            >= self.force_exit_time
-        )
+        """Return True when the configured force-exit time is reached."""
+        return row["timestamp"].time() >= self.force_exit_time
 
     def additional_trade_metadata(
         self,
         row: pd.Series,
     ) -> Dict[str, Any]:
-        """
-        Optional strategy-specific metadata saved with a trade.
-        """
-        return {
-            "strategy": self.name,
-        }
+        """Return optional strategy-specific metadata."""
+        return {"strategy": self.name}
 
     def validate_dataframe(
         self,
         dataframe: pd.DataFrame,
     ) -> None:
-        """
-        Validate that the supplied dataset contains all columns
-        required by this strategy.
-        """
-        missing = self.required_columns().difference(
-            dataframe.columns
-        )
+        """Validate that the dataframe contains required columns."""
+        missing = self.required_columns().difference(dataframe.columns)
 
         if missing:
             raise ValueError(
                 "Dataset is missing columns: "
-                + ", ".join(
-                    sorted(missing)
-                )
+                + ", ".join(sorted(missing))
             )
 
     def can_open_new_position(
         self,
         row: pd.Series,
     ) -> bool:
-        """
-        Return True only during the permitted entry window.
-        """
-        current_time = (
-            row["timestamp"].time()
-        )
+        """Return True only during the permitted entry window."""
+        current_time = row["timestamp"].time()
 
         return (
             self.entry_start_time
@@ -174,62 +126,34 @@ class BaseStrategy(ABC):
         self,
         row: pd.Series,
         position: Dict[str, Any],
-    ) -> Optional[
-        Dict[str, Any]
-    ]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Default stop, target, and forced-exit handling.
 
-        Conservative assumption:
-        if stop and target are both touched in one candle,
-        the stop is counted first.
+        Conservative intrabar assumption: if stop and target are
+        both touched in one candle, the stop is counted first.
         """
-        low = float(
-            row["low"]
-        )
-
-        high = float(
-            row["high"]
-        )
-
-        stop_loss = float(
-            position["stop_loss"]
-        )
-
-        target = float(
-            position["target"]
-        )
+        low = float(row["low"])
+        high = float(row["high"])
+        stop_loss = float(position["stop_loss"])
+        target = float(position["target"])
 
         if low <= stop_loss:
             return {
-                "raw_exit_price": (
-                    stop_loss
-                ),
-                "exit_reason": (
-                    "STOP_LOSS"
-                ),
+                "raw_exit_price": stop_loss,
+                "exit_reason": "STOP_LOSS",
             }
 
         if high >= target:
             return {
-                "raw_exit_price": (
-                    target
-                ),
-                "exit_reason": (
-                    "TARGET"
-                ),
+                "raw_exit_price": target,
+                "exit_reason": "TARGET",
             }
 
-        if self.should_force_exit(
-            row
-        ):
+        if self.should_force_exit(row):
             return {
-                "raw_exit_price": float(
-                    row["close"]
-                ),
-                "exit_reason": (
-                    "DAY_END_EXIT"
-                ),
+                "raw_exit_price": float(row["close"]),
+                "exit_reason": "DAY_END_EXIT",
             }
 
         return None

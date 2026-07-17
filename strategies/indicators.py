@@ -166,27 +166,101 @@ def add_rsi(
 def add_vwap(
     dataframe: pd.DataFrame,
 ) -> pd.DataFrame:
+    """
+    Calculate intraday VWAP.
+
+    VWAP resets at the beginning of every trading day.
+    """
+
+    df = dataframe.copy()
+
+    if "timestamp" not in df.columns:
+        raise ValueError(
+            "VWAP calculation requires "
+            "a timestamp column."
+        )
+
+    required_columns = {
+        "high",
+        "low",
+        "close",
+        "volume",
+    }
+
+    missing_columns = (
+        required_columns
+        - set(df.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "VWAP calculation missing columns: "
+            + ", ".join(
+                sorted(missing_columns)
+            )
+        )
+
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"],
+        errors="coerce",
+    )
+
+    df["high"] = pd.to_numeric(
+        df["high"],
+        errors="coerce",
+    )
+
+    df["low"] = pd.to_numeric(
+        df["low"],
+        errors="coerce",
+    )
+
+    df["close"] = pd.to_numeric(
+        df["close"],
+        errors="coerce",
+    )
+
+    df["volume"] = pd.to_numeric(
+        df["volume"],
+        errors="coerce",
+    )
+
+    trade_date = (
+        df["timestamp"].dt.date
+    )
+
     typical_price = (
-        dataframe["high"]
-        + dataframe["low"]
-        + dataframe["close"]
-    ) / 3
+        df["high"]
+        + df["low"]
+        + df["close"]
+    ) / 3.0
+
+    price_volume = (
+        typical_price
+        * df["volume"]
+    )
 
     cumulative_value = (
-        typical_price
-        * dataframe["volume"]
-    ).cumsum()
+        price_volume
+        .groupby(trade_date)
+        .cumsum()
+    )
 
     cumulative_volume = (
-        dataframe["volume"].cumsum()
+        df["volume"]
+        .groupby(trade_date)
+        .cumsum()
     )
 
-    dataframe["vwap"] = (
+    df["vwap"] = (
         cumulative_value
-        / cumulative_volume.replace(0, pd.NA)
+        / cumulative_volume.replace(
+            0,
+            pd.NA,
+        )
     )
 
-    return dataframe
+    return df
 
 
 def add_atr(
