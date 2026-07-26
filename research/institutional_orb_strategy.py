@@ -6,8 +6,9 @@ Market hypothesis:
 - A fresh breakout supported by trend, volume, and volatility
   may continue.
 - A confirmation candle reduces false breakout entries.
+- A strong breakout candle helps reject weak or indecisive moves.
 
-Version 1 supports long trades only.
+Version 2.1 supports long trades only.
 """
 
 from typing import Any, Dict, Set
@@ -24,11 +25,12 @@ class InstitutionalORBStrategy(BaseStrategy):
     Entry sequence:
     1. Build the opening range from 09:15 until 09:30.
     2. Previous candle must close above the opening-range high.
-    3. Current candle must confirm above the opening-range high.
-    4. EMA20 must be above EMA50.
-    5. Relative volume must meet the minimum threshold.
-    6. ATR must be expanding.
-    7. Entry must not be too far above the breakout level.
+    3. Breakout candle must show strong buying pressure.
+    4. Current candle must confirm above the opening-range high.
+    5. EMA20 must be above EMA50.
+    6. Relative volume must meet the minimum threshold.
+    7. ATR must be expanding.
+    8. Entry must not be too far above the breakout level.
     """
 
     name = "INSTITUTIONAL_ORB"
@@ -43,7 +45,7 @@ class InstitutionalORBStrategy(BaseStrategy):
         opening_range_start_time: str = "09:15",
         opening_range_end_time: str = "09:30",
         entry_start_time: str = "09:30",
-        entry_cutoff_time: str = "14:30",
+        entry_cutoff_time: str = "10:30",
         force_exit_time: str = "15:15",
     ) -> None:
         super().__init__(
@@ -225,6 +227,85 @@ class InstitutionalORBStrategy(BaseStrategy):
             and current_atr > average_previous_atr
         )
 
+    def _is_strong_breakout_candle(
+        self,
+        candle: pd.Series,
+    ) -> bool:
+        """
+        Return True when the breakout candle shows strong buying pressure.
+
+        Conditions:
+        - Candle must be bullish.
+        - Real body must be at least 50% of the full candle range.
+        - Close must be within the upper 25% of the candle range.
+        """
+
+        required_values = [
+            candle["open"],
+            candle["high"],
+            candle["low"],
+            candle["close"],
+        ]
+
+        if any(
+            pd.isna(value)
+            for value in required_values
+        ):
+            return False
+
+        open_price = float(
+            candle["open"]
+        )
+
+        high_price = float(
+            candle["high"]
+        )
+
+        low_price = float(
+            candle["low"]
+        )
+
+        close_price = float(
+            candle["close"]
+        )
+
+        candle_range = (
+            high_price
+            - low_price
+        )
+
+        if candle_range <= 0:
+            return False
+
+        body_size = abs(
+            close_price
+            - open_price
+        )
+
+        # Breakout candle must be bullish.
+        if close_price <= open_price:
+            return False
+
+        # Body must represent at least 50% of the candle range.
+        minimum_body_size = (
+            candle_range
+            * 0.50
+        )
+
+        if body_size < minimum_body_size:
+            return False
+
+        # Close must be in the top 25% of the candle.
+        close_position = (
+            close_price
+            - low_price
+        ) / candle_range
+
+        if close_position < 0.75:
+            return False
+
+        return True
+
     def should_enter(
         self,
         row_index: int,
@@ -311,6 +392,12 @@ class InstitutionalORBStrategy(BaseStrategy):
 
         # Previous candle must break above the opening-range high.
         if breakout_close <= opening_high:
+            return False
+
+        # Breakout candle itself must be strong.
+        if not self._is_strong_breakout_candle(
+            breakout_candle
+        ):
             return False
 
         # Require a fresh breakout rather than repeated signals.
@@ -407,6 +494,7 @@ class InstitutionalORBStrategy(BaseStrategy):
 
         return {
             "strategy": self.name,
+            "strategy_version": "2.1",
             "ema_20": float(
                 row["ema_20"]
             ),
