@@ -7,6 +7,17 @@ import time
 from datetime import time as clock_time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from market_intelligence.live_snapshot_builder import (
+    LiveSnapshotBuilder,
+)
+
+from decision.decision_context import (
+    DecisionContext,
+)
+
+from execution.decision_pipeline import (
+    DecisionPipeline,
+)
 
 import pandas as pd
 from execution.sell_execution import (
@@ -2405,6 +2416,8 @@ def main() -> None:
     market_brain = MarketBrain()
     claude = ClaudeAnalyzer()
 
+    decision_pipeline = DecisionPipeline()
+
     performance_coach = (
         PerformanceCoach()
     )
@@ -2701,6 +2714,75 @@ def main() -> None:
                     market_brain
                 ),
             )
+
+            print("\n===== SCAN RESULTS =====")
+            print(latest_scan)
+            print(
+                f"Total scan results: {len(latest_scan)}"
+            )
+
+            if latest_scan:
+                snapshot = LiveSnapshotBuilder.build(
+                    latest_scan
+                )
+
+                decision_context = DecisionContext.build(
+                    scan_results=latest_scan,
+                    trader=trader,
+                )
+
+                sector_map = decision_context.get(
+                    "sector_map",
+                    {},
+                )
+
+                if sector_map:
+                    decision_result = (
+                        decision_pipeline.run(
+                            snapshot=snapshot.to_dict(),
+                            sector_map=sector_map,
+                            total_capital=(
+                                decision_context[
+                                    "total_capital"
+                                ]
+                            ),
+                            prices=decision_context[
+                                "prices"
+                            ],
+                            available_capital=(
+                                decision_context[
+                                    "total_capital"
+                                ]
+                            ),
+                            current_open_positions=0,
+                            maximum_open_positions=3,
+                            existing_daily_risk=0.0,
+                            existing_portfolio_exposure=(
+                                0.0
+                            ),
+                            existing_sector_exposure={},
+                        )
+                    )
+
+                    print(
+                        "\n===== LIVE DECISION "
+                        "PIPELINE ====="
+                    )
+                    print(
+                        decision_result.summary
+                    )
+
+                else:
+                    print(
+                        "\nDecision pipeline skipped: "
+                        "sector map is empty."
+                    )
+
+            else:
+                print(
+                    "\nDecision pipeline skipped: "
+                    "no valid scan results."
+                )
 
             open_paper_trades(
                 scan_results=latest_scan,
