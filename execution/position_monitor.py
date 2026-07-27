@@ -1,7 +1,7 @@
 from typing import Any, Dict, List
 
 from core.paper_trader import PaperTrader
-from execution.sell_execution import SellExecution
+from execution.sell_execution import execute_paper_sell
 from execution.live_execution_controller import (
     LiveExecutionController,
 )
